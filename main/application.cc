@@ -17,6 +17,7 @@
 #include <arpa/inet.h>
 #include <cJSON.h>
 #include <cstring>
+#include <cctype>
 
 #define TAG "Application"
 
@@ -590,6 +591,28 @@ void Application::InitializeProtocol() {
         } else if (strcmp(type->valuestring, "stt") == 0) {
             auto text = cJSON_GetObjectItem(root, "text");
             if (cJSON_IsString(text)) {
+                        std::string recognized_text = text->valuestring;
+        std::string normalized_text = recognized_text;
+
+        for (char& ch : normalized_text) {
+            ch = static_cast<char>(
+                std::tolower(static_cast<unsigned char>(ch)));
+        }
+
+        if (normalized_text.find("stop lagu") != std::string::npos ||
+            normalized_text.find("hentikan lagu") != std::string::npos ||
+            normalized_text.find("berhenti lagu") != std::string::npos ||
+            normalized_text.find("matikan lagu") != std::string::npos ||
+            normalized_text.find("stop musik") != std::string::npos ||
+            normalized_text.find("hentikan musik") != std::string::npos) {
+            Schedule([this]() {
+                auto& youtube = YouTubeAudioPoller::GetInstance();
+                if (youtube.IsPlaying()) {
+                    ESP_LOGI(TAG, "Voice command: stop YouTube audio");
+                    youtube.Abort();
+                }
+            });
+        }
                 std::vector<TextGlyph> glyphs;
                 uint8_t bpp = 0;
                 if (!TextGlyphPayload::Parse(root, glyphs, bpp)) {
@@ -767,6 +790,15 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
 }
 
 void Application::HandleStartListeningEvent() {
+    auto& youtube = YouTubeAudioPoller::GetInstance();
+
+    // Tombol pendek menghentikan atau membatalkan lagu terlebih dahulu.
+    if (youtube.IsPlaying()) {
+        ESP_LOGI(TAG, "Button pressed: stopping/canceling YouTube audio");
+        youtube.Abort();
+        return;
+    }
+
     auto state = GetDeviceState();
 
     if (state == kDeviceStateActivating) {
