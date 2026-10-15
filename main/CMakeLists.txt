@@ -1125,8 +1125,13 @@ if(NOT _font_match)
 endif()
 set(TEXT_FONT_SIZE "${CMAKE_MATCH_1}")
 set(TEXT_FONT_BPP "${CMAKE_MATCH_2}")
+if(NOT MANUFACTURER)
+    set(MANUFACTURER "Custom")
+endif()
+
 target_compile_definitions(${COMPONENT_LIB}
                     PRIVATE BOARD_TYPE=\"${BOARD_TYPE}\" BOARD_NAME=\"${BOARD_NAME}\"
+                    PRIVATE BOARD_MANUFACTURER=\"${MANUFACTURER}\"
                     PRIVATE BUILTIN_TEXT_FONT=${BUILTIN_TEXT_FONT} BUILTIN_ICON_FONT=${BUILTIN_ICON_FONT}
                     PRIVATE TEXT_FONT_SIZE=${TEXT_FONT_SIZE} TEXT_FONT_BPP=${TEXT_FONT_BPP}
                     )
