@@ -142,6 +142,7 @@ public:
 
     bool IsIdle();
     bool IsPlaybackIdle();
+    int GetDecodeQueueSize();
 
     bool IsWakeWordRunning() const {
         return xEventGroupGetBits(event_group_) & AS_EVENT_WAKE_WORD_RUNNING;
