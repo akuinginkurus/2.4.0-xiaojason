@@ -4,7 +4,7 @@
 #include "config.h"
 #include "pocket_oled_display.h"
 #include "wifi_board.h"
-
+#include "youtube_audio_poller.h"
 #include <driver/i2c_master.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_panel_vendor.h>
