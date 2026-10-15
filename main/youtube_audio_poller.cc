@@ -604,7 +604,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
 
         // Dynamic Pre-Buffer (Jitter Buffer):
         // 4 frames (~240ms) on good signal, 6 frames (~360ms) on weaker signal or reconnect
-        size_t prebuffer_target = (live_rssi >= -75 && frames_pushed == 0) ? 4 : 6;
+        size_t prebuffer_target = (live_rssi >= -75 && frames_pushed == 0) ? 8 : 12;
         std::vector<std::unique_ptr<AudioStreamPacket>> prebuffer;
         bool is_prebuffering = true;
 
