@@ -115,6 +115,9 @@ public:
     AecMode GetAecMode() const { return aec_mode_; }
     void PlaySound(const std::string_view& sound);
     AudioService& GetAudioService() { return audio_service_; }
+    void CloseAudioChannel();
+    bool IsAborted() const { return aborted_; }
+    void ResetAborted() { aborted_ = false; }
     
     /**
      * Reset protocol resources (thread-safe)
