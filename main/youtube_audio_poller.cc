@@ -84,7 +84,7 @@ void YouTubeAudioPoller::Start() {
     xTaskCreate([](void* arg) {
         static_cast<YouTubeAudioPoller*>(arg)->TaskLoop();
         vTaskDelete(NULL);
-    }, "yt_poller", 3584, this, 2, &task_handle_);
+    }, "yt_poller", 6144, this, 2, &task_handle_);
     ESP_LOGI(TAG, "YouTubeAudioPoller started");
 }
 
