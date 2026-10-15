@@ -1,0 +1,29 @@
+{
+    "target": "esp32c3",
+    "type": "pocket-wall-e-c3",
+    "builds": [
+        {
+            "name": "pocket-wall-e-c3-pocket-esp-ai-by-huy-vector-en",
+            "sdkconfig_append": [
+                "CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y",
+                "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v2/4m.csv\"",
+                "CONFIG_BOARD_TYPE_POCKET_WALL_E_C3=y", 
+                "CONFIG_LANGUAGE_EN_US=y",
+                "CONFIG_LANGUAGE_VI_VN=n",
+                "CONFIG_USE_ESP_WAKE_WORD=y",
+                "CONFIG_SR_WN_WN9S_NIHAOXIAOZHI=n",
+                "CONFIG_SR_WN_WN9S_HIESP=y",
+                "CONFIG_SR_WN_WN9S_HIJASON=n",
+                "CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y",
+                "CONFIG_COMPILER_OPTIMIZATION_SIZE=y",
+                "CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=n",
+                "CONFIG_LWIP_IPV6=n",
+                "CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4",
+                "CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=6",
+                "CONFIG_ESP_WIFI_RX_BA_WIN=4",
+                "CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=n",
+                "CONFIG_NEWLIB_NANO_FORMAT=y"
+            ]
+        }
+    ]
+}
