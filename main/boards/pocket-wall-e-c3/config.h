@@ -18,7 +18,6 @@
 #define DISPLAY_HEIGHT 64
 #define DISPLAY_MIRROR_X false
 #define DISPLAY_MIRROR_Y false
-#define SH1106
 
 #define ACTION_BUTTON_GPIO GPIO_NUM_10
 
