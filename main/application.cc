@@ -1213,6 +1213,12 @@ void Application::SetAecMode(AecMode mode) {
     });
 }
 
+void Application::CloseAudioChannel() {
+    if (protocol_ && protocol_->IsAudioChannelOpened()) {
+        protocol_->CloseAudioChannel();
+    }
+}
+
 void Application::PlaySound(const std::string_view& sound) { audio_service_.PlaySound(sound); }
 
 void Application::ResetProtocol() {
