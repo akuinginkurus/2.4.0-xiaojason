@@ -184,7 +184,7 @@ public:
 
     Display* GetDisplay() override { return display_; }
 
-    std::string GetWifiHostnamePrefix() const override { return "pocket-wall-e"; }
+  
 };
 
 DECLARE_BOARD(PocketWallEC3Board);
