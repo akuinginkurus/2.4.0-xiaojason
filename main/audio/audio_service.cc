@@ -735,13 +735,15 @@ bool AudioService::IsIdle() {
     return audio_encode_queue_.empty() && IsPlaybackDrainedLocked() && audio_testing_queue_.empty();
 }
 
+
 bool AudioService::IsPlaybackIdle() {
-    int AudioService::GetDecodeQueueSize() {
-    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
-    return static_cast<int>(audio_decode_queue_.size());
-    }
     std::lock_guard<std::mutex> lock(audio_queue_mutex_);
     return IsPlaybackDrainedLocked();
+}
+
+int AudioService::GetDecodeQueueSize() {
+    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+    return static_cast<int>(audio_decode_queue_.size());
 }
 
 void AudioService::ResetDecoder() {
