@@ -41,7 +41,6 @@ jobs:
 
           python scripts/build.py pocket-wall-e-c3 \
             --name pocket-wall-e-c3 \
-            --wake-word hiesp
 
       - name: Verify firmware
         shell: bash
