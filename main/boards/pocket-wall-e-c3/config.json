@@ -3,7 +3,7 @@
     "type": "pocket-wall-e-c3",
     "builds": [
         {
-            "name": "pocket-wall-e-c3-pocket-esp-ai-by-huy-vector-en",
+            "name": "pocket-wall-e-c3",
             "sdkconfig_append": [
                 "CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y",
                 "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v2/4m.csv\"",
