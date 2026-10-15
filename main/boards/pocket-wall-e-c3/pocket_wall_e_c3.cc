@@ -100,6 +100,7 @@ private:
     Display* display_ = nullptr;
     Button action_button_;
     MotorController* motor_controller_ = nullptr;
+    bool youtube_interrupted_ = false;
 
     void InitializeDisplayI2c() {
         i2c_master_bus_config_t bus_config = {};
@@ -151,17 +152,46 @@ private:
                                          DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
     }
 
-    void InitializeButton() {
-        action_button_.OnClick([this]() {
-            auto& app = Application::GetInstance();
-            if (app.GetDeviceState() == kDeviceStateStarting) {
-                EnterWifiConfigMode();
-                return;
+    
+void InitializeButton() {
+    // Hentikan lagu seketika saat tombol mulai ditekan.
+    action_button_.OnPressDown([this]() {
+        if (YouTubeAudioPoller::GetInstance().IsPlaying()) {
+            youtube_interrupted_ = true;
+
+            ESP_LOGI(TAG, "Tombol ditekan: menghentikan lagu YouTube");
+            YouTubeAudioPoller::GetInstance().Abort();
+        }
+    });
+
+    // Setelah tombol dilepas, jangan membuka chat jika tadi
+    // tombol digunakan untuk menghentikan lagu.
+    action_button_.OnClick([this]() {
+        if (youtube_interrupted_) {
+            youtube_interrupted_ = false;
+
+            if (display_ != nullptr) {
+                display_->ShowNotification("Lagu dihentikan", 2000);
             }
-            app.ToggleChatState();
-        });
-        action_button_.OnLongPress([this]() { EnterWifiConfigMode(); });
-    }
+            return;
+        }
+
+        auto& app = Application::GetInstance();
+
+        if (app.GetDeviceState() == kDeviceStateStarting) {
+            EnterWifiConfigMode();
+            return;
+        }
+
+        app.ToggleChatState();
+    });
+
+    action_button_.OnLongPress([this]() {
+        youtube_interrupted_ = false;
+        EnterWifiConfigMode();
+    });
+}
+
 
 public:
     PocketWallEC3Board() : action_button_(ACTION_BUTTON_GPIO) {
