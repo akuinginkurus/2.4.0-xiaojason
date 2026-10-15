@@ -101,22 +101,42 @@ void YouTubeAudioPoller::Stop() {
 }
 
 void YouTubeAudioPoller::Abort() {
+    if (!IsPlaying()) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "Abort requested: stop or cancel YouTube audio");
+
+    abort_requested_ = true;
+    play_requested_ = false;
+    query_requested_ = false;
+    trigger_requested_ = false;
+
+    {
+        std::lock_guard<std::mutex> lock(song_mutex_);
+        pending_video_id_.clear();
+        pending_title_.clear();
+        pending_query_.clear();
+    }
+
     if (is_playing_.load()) {
-        ESP_LOGI(TAG, "Abort requested for YouTube audio stream");
-        abort_requested_ = true;
         Application::GetInstance().GetAudioService().ResetDecoder();
-        {
-            std::lock_guard<std::mutex> lock(http_mutex_);
-            if (active_http_ != nullptr) {
-                ESP_LOGI(TAG, "Force-closing active HTTP connection to stop stream immediately");
-                active_http_->Close();
-            }
+    } else {
+        Application::GetInstance().GetAudioService()
+            .EnableWakeWordDetection(true);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(http_mutex_);
+        if (active_http_ != nullptr) {
+            active_http_->Close();
         }
     }
 }
 
 void YouTubeAudioPoller::TriggerFetch() {
     ESP_LOGI(TAG, "Fetch triggered externally");
+    abort_requested_ = false;
     trigger_requested_ = true;
     Application::GetInstance().GetAudioService().EnableWakeWordDetection(false);
 }
@@ -131,6 +151,7 @@ void YouTubeAudioPoller::PlaySong(const std::string& video_id, const std::string
         pending_video_id_ = video_id;
         pending_title_ = title.empty() ? "YouTube Song" : title;
     }
+    abort_requested_ = false;
     play_requested_ = true;
     Application::GetInstance().GetAudioService().EnableWakeWordDetection(false);
 }
@@ -149,6 +170,7 @@ void YouTubeAudioPoller::PlayQuery(const std::string& query) {
         std::lock_guard<std::mutex> lock(song_mutex_);
         pending_query_ = query;
     }
+    abort_requested_ = false;
     query_requested_ = true;
     Application::GetInstance().GetAudioService().EnableWakeWordDetection(false);
 }
@@ -393,7 +415,6 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
         current_title_ = title;
     }
     is_playing_ = true;
-    abort_requested_ = false;
     app.ResetAborted();
 
     ESP_LOGI(TAG, ">> DETEKSI: Mulai memutar lagu YouTube: \"%s\" (vid=%s) <<", title.c_str(), video_id.c_str());
