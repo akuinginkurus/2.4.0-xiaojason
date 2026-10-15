@@ -10,6 +10,7 @@
 #include "system_info.h"
 #include "text_glyph_payload.h"
 #include "websocket_protocol.h"
+#include "youtube_audio_poller.h"
 
 #include <driver/gpio.h>
 #include <esp_log.h>
