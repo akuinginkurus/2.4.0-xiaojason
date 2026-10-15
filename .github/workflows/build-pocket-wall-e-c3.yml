@@ -1,1 +1,58 @@
 
+
+name: Build Pocket Wall-E C3
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "main/**"
+      - "partitions/**"
+      - "scripts/**"
+      - "sdkconfig.defaults*"
+      - "config.json"
+      - ".github/workflows/build-pocket-wall-e-c3.yml"
+
+jobs:
+  build:
+    name: Build Xiaozhi ESP32-C3
+    runs-on: ubuntu-latest
+
+    container:
+      image: espressif/idf:v6.1
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare ESP-IDF
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          idf.py --version
+          python --version
+
+      - name: Build Pocket Wall-E C3
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+
+          python scripts/build.py pocket-wall-e-c3 \
+            --name pocket-wall-e-c3 \
+            --wake-word hiesp
+
+      - name: Verify firmware
+        shell: bash
+        run: |
+          test -s build/merged-binary.bin
+          ls -lh build/merged-binary.bin
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pocket-wall-e-c3-firmware
+          path: build/merged-binary.bin
+          if-no-files-found: error
+          retention-days: 14
