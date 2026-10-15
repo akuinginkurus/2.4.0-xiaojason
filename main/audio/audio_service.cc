@@ -736,6 +736,10 @@ bool AudioService::IsIdle() {
 }
 
 bool AudioService::IsPlaybackIdle() {
+    int AudioService::GetDecodeQueueSize() {
+    std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+    return static_cast<int>(audio_decode_queue_.size());
+    }
     std::lock_guard<std::mutex> lock(audio_queue_mutex_);
     return IsPlaybackDrainedLocked();
 }
