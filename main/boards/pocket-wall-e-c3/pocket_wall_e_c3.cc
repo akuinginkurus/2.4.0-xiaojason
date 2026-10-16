@@ -215,6 +215,7 @@ public:
     PocketWallEC3Board() : action_button_(ACTION_BUTTON_GPIO) {
         InitializeDisplayI2c();
         InitializeDisplay();
+        InitializeVl53Test();
         InitializeButton();
         motor_controller_ = new MotorController(MOTOR_LEFT_IN1_PIN, MOTOR_LEFT_IN2_PIN,
                                                 MOTOR_RIGHT_IN1_PIN, MOTOR_RIGHT_IN2_PIN);
