@@ -845,6 +845,10 @@ void Application::HandleStopListeningEvent() {
 }
 
 void Application::HandleWakeWordDetectedEvent() {
+        if (YouTubeAudioPoller::GetInstance().IsPlaying()) {
+        ESP_LOGI(TAG, "Ignoring wake word during YouTube playback");
+        return;
+    }
     if (!protocol_) {
         return;
     }
@@ -953,13 +957,17 @@ void Application::HandleStateChangedEvent() {
 
     switch (new_state) {
         case kDeviceStateUnknown:
-        case kDeviceStateIdle:
-            display->SetStatus(Lang::Strings::STANDBY);
-            display->ClearChatMessages();    // Clear messages first
-            display->SetEmotion("neutral");  // Then set emotion (wechat mode checks child count)
-            audio_service_.EnableVoiceProcessing(false);
-            audio_service_.EnableWakeWordDetection(true);
-            break;
+case kDeviceStateIdle:
+    display->SetStatus(Lang::Strings::STANDBY);
+    display->ClearChatMessages();
+    display->SetEmotion("neutral");
+    audio_service_.EnableVoiceProcessing(false);
+
+    // Jangan aktifkan mikrofon/wake word selama lagu YouTube.
+    audio_service_.EnableWakeWordDetection(
+        !YouTubeAudioPoller::GetInstance().IsPlaying());
+
+    break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
             display->SetEmotion("neutral");
