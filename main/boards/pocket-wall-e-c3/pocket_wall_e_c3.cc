@@ -4,7 +4,9 @@
 #include "config.h"
 #include "pocket_oled_display.h"
 #include "wifi_board.h"
+extern "C" {
 #include "vl53l0x.h"
+}
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <driver/i2c_master.h>
