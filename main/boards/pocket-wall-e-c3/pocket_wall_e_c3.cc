@@ -114,12 +114,12 @@ static void Vl53TestTask(void* arg) {
 
         esp_err_t err = vl53l0x_single_measure(sensor, &data);
 
-        if (err == ESP_OK && data.valid) {
+                if (err == ESP_OK && data.valid) {
             ESP_LOGI("VL53_TEST",
                      "Jarak: %u mm | Status: %u",
                      (unsigned)data.distance_mm,
                      (unsigned)data.range_status);
-        }         } else {
+        } else {
             ESP_LOGW("VL53_TEST",
                      "Pembacaan gagal: err=%s, valid=%d, "
                      "jarak=%u mm, status=%u",
