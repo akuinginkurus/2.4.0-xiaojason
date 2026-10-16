@@ -84,7 +84,7 @@ void YouTubeAudioPoller::Start() {
     xTaskCreate([](void* arg) {
         static_cast<YouTubeAudioPoller*>(arg)->TaskLoop();
         vTaskDelete(NULL);
-    }, "yt_poller", 6144, this, 2, &task_handle_);
+    }, "yt_poller", 3584, this, 2, &task_handle_);
     ESP_LOGI(TAG, "YouTubeAudioPoller started");
 }
 
@@ -604,7 +604,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
 
         // Dynamic Pre-Buffer (Jitter Buffer):
         // 4 frames (~240ms) on good signal, 6 frames (~360ms) on weaker signal or reconnect
-        size_t prebuffer_target = (live_rssi >= -75 && frames_pushed == 0) ? 8 : 12;
+        size_t prebuffer_target = (live_rssi >= -75 && frames_pushed == 0) ? 4 : 6;
         std::vector<std::unique_ptr<AudioStreamPacket>> prebuffer;
         bool is_prebuffering = true;
 
