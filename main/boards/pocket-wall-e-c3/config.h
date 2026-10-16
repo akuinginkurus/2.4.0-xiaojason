@@ -19,7 +19,7 @@
 #define DISPLAY_MIRROR_X false
 #define DISPLAY_MIRROR_Y false
 
-#define ACTION_BUTTON_GPIO GPIO_NUM_10
+#define ACTION_BUTTON_GPIO GPIO_NUM_0
 
 // MX1508 dual H-bridge.
 #define MOTOR_LEFT_IN1_PIN GPIO_NUM_5
