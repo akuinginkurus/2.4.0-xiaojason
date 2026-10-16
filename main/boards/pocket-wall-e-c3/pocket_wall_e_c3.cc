@@ -4,7 +4,9 @@
 #include "config.h"
 #include "pocket_oled_display.h"
 #include "wifi_board.h"
-
+#include "vl53l0x.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <driver/i2c_master.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_panel_vendor.h>
@@ -100,6 +102,52 @@ private:
     Display* display_ = nullptr;
     Button action_button_;
     MotorController* motor_controller_ = nullptr;
+    vl53l0x_handle_t floor_sensor_ = nullptr;
+
+static void Vl53TestTask(void* arg) {
+    auto sensor = static_cast<vl53l0x_handle_t>(arg);
+
+    while (true) {
+        vl53l0x_data_t data = {};
+
+        esp_err_t err = vl53l0x_single_measure(sensor, &data);
+
+        if (err == ESP_OK && data.valid) {
+            ESP_LOGI("VL53_TEST",
+                     "Jarak: %u mm | Status: %u",
+                     (unsigned)data.distance_mm,
+                     (unsigned)data.range_status);
+        } else {
+            ESP_LOGW("VL53_TEST",
+                     "Pembacaan gagal: err=%s",
+                     esp_err_to_name(err));
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+}
+
+void InitializeVl53Test() {
+    ESP_LOGI("VL53_TEST", "Memulai sensor VL53L0X");
+
+    ESP_ERROR_CHECK(vl53l0x_create(
+        &floor_sensor_, display_i2c_bus_));
+
+    ESP_ERROR_CHECK(vl53l0x_init(floor_sensor_));
+
+    ESP_ERROR_CHECK(vl53l0x_set_profile(
+        floor_sensor_, VL53L0X_PROFILE_DEFAULT));
+
+    BaseType_t result = xTaskCreate(
+        Vl53TestTask,
+        "vl53_test",
+        4096,
+        floor_sensor_,
+        3,
+        nullptr);
+
+    ESP_ERROR_CHECK(result == pdPASS ? ESP_OK : ESP_FAIL);
+}
 
     void InitializeDisplayI2c() {
         i2c_master_bus_config_t bus_config = {};
