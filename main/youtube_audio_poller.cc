@@ -864,13 +864,21 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
 
     bool was_aborted = abort_requested_.load();
     if (!was_aborted) {
-        int wait_ms = 0;
-        while (!app.GetAudioService().IsPlaybackIdle() && wait_ms < 5000) {
-            vTaskDelay(pdMS_TO_TICKS(100));
-            wait_ms += 100;
-        }
-    } else {
+    int wait_ms = 0;
+    while (!app.GetAudioService().IsPlaybackIdle() &&
+           wait_ms < 5000) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        wait_ms += 100;
+    }
+
+    if (!app.GetAudioService().IsPlaybackIdle()) {
+        ESP_LOGW(TAG,
+                 "Playback did not drain; resetting decoder");
         app.GetAudioService().ResetDecoder();
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+} else {
+    app.GetAudioService().ResetDecoder();
     }
 
     // Set is_playing_ to false immediately so device state logic knows playback has ended
