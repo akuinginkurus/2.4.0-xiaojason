@@ -909,14 +909,22 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     ReportStatus(end_status, video_id);
     vTaskDelay(pdMS_TO_TICKS(150));
 
-    // 2. Cleanly restore device state to Idle/Standby
-    app.SetDeviceState(kDeviceStateIdle);
-    Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
-    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-    vTaskDelay(pdMS_TO_TICKS(100));
+    // 2. Restore device state
+app.SetDeviceState(kDeviceStateIdle);
 
-    // 3. Re-enable WakeWord detection in clean, unfragmented memory
+// 3. Restore WakeWord before low-power mode
+ESP_LOGI(TAG, "Restoring WakeNet after YouTube playback");
+app.GetAudioService().EnableWakeWordDetection(true);
+
+if (!app.GetAudioService().IsWakeWordRunning()) {
+    ESP_LOGW(TAG, "WakeNet not running; retrying once");
+    vTaskDelay(pdMS_TO_TICKS(300));
     app.GetAudioService().EnableWakeWordDetection(true);
+}
+
+// 4. Enter low-power mode last
+Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
 }
 
 void YouTubeAudioPoller::TaskLoop() {
