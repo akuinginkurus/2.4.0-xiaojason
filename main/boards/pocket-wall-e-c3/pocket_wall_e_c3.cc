@@ -133,6 +133,7 @@ static void Vl53TestTask(void* arg) {
     }
 }
 
+
 void InitializeVl53Test() {
     ESP_LOGI("VL53_TEST", "Memulai sensor VL53L0X");
 
@@ -140,6 +141,35 @@ void InitializeVl53Test() {
         &floor_sensor_, display_i2c_bus_));
 
     ESP_ERROR_CHECK(vl53l0x_init(floor_sensor_));
+
+    // Kalibrasi referensi SPAD
+    vl53l0x_ref_spad_calibration_t spad_cal = {};
+    esp_err_t err = vl53l0x_perform_ref_spad_management(
+        floor_sensor_, &spad_cal);
+
+    if (err != ESP_OK) {
+        ESP_LOGE("VL53_TEST",
+                 "Kalibrasi SPAD gagal: %s",
+                 esp_err_to_name(err));
+        return;
+    }
+
+    // Kalibrasi referensi VHV dan phase
+    vl53l0x_ref_calibration_t ref_cal = {};
+    err = vl53l0x_perform_ref_calibration(
+        floor_sensor_, &ref_cal);
+
+    if (err != ESP_OK) {
+        ESP_LOGE("VL53_TEST",
+                 "Kalibrasi referensi gagal: %s",
+                 esp_err_to_name(err));
+        return;
+    }
+
+    ESP_LOGI("VL53_TEST",
+             "Kalibrasi OK: SPAD=%u aperture=%d",
+             (unsigned)spad_cal.count,
+             (int)spad_cal.is_aperture);
 
     ESP_ERROR_CHECK(vl53l0x_set_profile(
         floor_sensor_, VL53L0X_PROFILE_DEFAULT));
