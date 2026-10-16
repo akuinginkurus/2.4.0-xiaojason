@@ -776,14 +776,19 @@ void AudioService::EnableWakeWordDetection(bool enable) {
             xEventGroupClearBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
             return;
         }
-        {
-            std::lock_guard<std::mutex> lock(input_resampler_mutex_);
-            if (input_resampler_ != nullptr) {
-                esp_ae_rate_cvt_reset(input_resampler_);
-            }
-        }
-        audio_engine_->EnableWakeWordDetection(true);
-        xEventGroupSetBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
+        audio_input_need_warmup_ = true;
+
+{
+    std::lock_guard<std::mutex> lock(input_resampler_mutex_);
+    if (input_resampler_ != nullptr) {
+        esp_ae_rate_cvt_reset(input_resampler_);
+    }
+}
+
+audio_engine_->EnableWakeWordDetection(true);
+xEventGroupSetBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
+
+ESP_LOGI(TAG, "Wake word detection re-enabled; audio warmup requested");
     } else {
         if (audio_engine_initialized_) {
             audio_engine_->EnableWakeWordDetection(false);
