@@ -930,9 +930,10 @@ if (!app.GetAudioService().IsWakeWordRunning()) {
     app.GetAudioService().EnableWakeWordDetection(true);
 }
 
-// 4. Enter low-power mode last
-Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
-esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+// TEST: jangan aktifkan mode hemat daya setelah lagu
+ESP_LOGW(TAG, "TEST: keeping performance mode after YouTube");
+Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+esp_wifi_set_ps(WIFI_PS_NONE);
 }
 
 void YouTubeAudioPoller::TaskLoop() {
