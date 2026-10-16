@@ -119,10 +119,14 @@ static void Vl53TestTask(void* arg) {
                      "Jarak: %u mm | Status: %u",
                      (unsigned)data.distance_mm,
                      (unsigned)data.range_status);
-        } else {
+        }         } else {
             ESP_LOGW("VL53_TEST",
-                     "Pembacaan gagal: err=%s",
-                     esp_err_to_name(err));
+                     "Pembacaan gagal: err=%s, valid=%d, "
+                     "jarak=%u mm, status=%u",
+                     esp_err_to_name(err),
+                     (int)data.valid,
+                     (unsigned)data.distance_mm,
+                     (unsigned)data.range_status);
         }
 
         vTaskDelay(pdMS_TO_TICKS(500));
