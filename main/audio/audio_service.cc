@@ -498,6 +498,13 @@ void AudioService::OpusCodecTask() {
 }
 
 void AudioService::SetDecodeSampleRate(int sample_rate, int frame_duration) {
+    #if CONFIG_IDF_TARGET_ESP32C3
+    // Keep the decoder allocated once on ESP32-C3.
+    // Avoid runtime decoder reallocation during playback.
+    if (opus_decoder_ != nullptr) {
+        return;
+    }
+#endif
     if (decoder_sample_rate_ == sample_rate && decoder_duration_ms_ == frame_duration) {
         return;
     }
