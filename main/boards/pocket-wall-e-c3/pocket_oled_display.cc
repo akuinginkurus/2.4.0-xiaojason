@@ -312,7 +312,7 @@ PocketOledDisplay::FaceMode PocketOledDisplay::FaceModeFromEmotion(const char* e
     if (Contains(emotion, "think") || Contains(emotion, "confused")) {
         return FaceMode::kThinking;
     }
-    if (Contains(emotion, "surpris")) {
+    if (Contains(emotion, "surprise")) {
         return FaceMode::kListening;
     }
     return FaceMode::kNeutral;
