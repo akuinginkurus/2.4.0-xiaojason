@@ -47,7 +47,7 @@ private:
     TaskHandle_t task_handle_ = nullptr;
 
     std::atomic<bool> moving_{false};
-    std::atomic<bool> edge_detected_{false};
+    std::atomic<bool> edge_detected_{true};
     std::atomic<int> left_speed_{0};
     std::atomic<int> right_speed_{0};
 
