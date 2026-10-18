@@ -1,5 +1,5 @@
 
-
+#include <driver/i2c_master.h>
 #include "sesame_controller.h"
 #include "config.h"
 #include "face-bitmaps.h"
