@@ -156,6 +156,9 @@ choice BOARD_TYPE
     config BOARD_TYPE_POCKET_WALL_E_C3
         bool "Pocket Wall-E ESP32-C3 SuperMini"
         depends on IDF_TARGET_ESP32C3
+    config BOARD_TYPE_XIAOZHIXSESAME
+        bool "XiaozhiXSesame"
+        depends on IDF_TARGET_ESP32C3
     config BOARD_TYPE_ESP_KORVO2_V3
         bool "Espressif Korvo2 V3"
         depends on IDF_TARGET_ESP32S3
