@@ -20,6 +20,8 @@ extern "C" {
 #endif
 
 #include <esp_log.h>
+#include <led_strip.h>
+#include <led_strip_rmt.h>
 #include <cstdint>
 #include <climits>
 #include <vector>
