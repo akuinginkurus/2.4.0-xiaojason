@@ -57,8 +57,8 @@
 #define ACTION_BUTTON_GPIO GPIO_NUM_0
 
 #define XSESAME_LISTENING_LED_GPIO GPIO_NUM_8
-#define XSESAME_LISTENING_LED_ON  0
-#define XSESAME_LISTENING_LED_OFF 1
+#define XSESAME_LISTENING_LED_ON  1
+#define XSESAME_LISTENING_LED_OFF 0
 // =====================================================
 // WAKE WORD
 // Hi Lexin diatur melalui config.json.
