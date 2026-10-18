@@ -121,6 +121,12 @@ private:
     Button action_button_;
     MotorController* motor_controller_ = nullptr;
     vl53l0x_handle_t floor_sensor_ = nullptr;
+    // WS2812 indikator listening
+    led_strip_handle_t listening_led_strip_ = nullptr;
+
+    struct ListeningLedTaskContext {
+    led_strip_handle_t strip;
+    };
 
     struct Vl53TaskContext {
         vl53l0x_handle_t sensor;
@@ -246,6 +252,107 @@ private:
         }
     }
 
+    
+static void ListeningLedTask(void* arg) {
+    auto* context = static_cast<ListeningLedTaskContext*>(arg);
+    uint8_t hue = 0;
+    bool was_lit = false;
+
+    while (true) {
+        const bool listening =
+            Application::GetInstance().GetDeviceState()
+            == kDeviceStateListening;
+
+        if (listening) {
+            for (int i = 0; i < WS2812_LED_COUNT; ++i) {
+                uint8_t pos = static_cast<uint8_t>(
+                    hue + i * 256 / WS2812_LED_COUNT);
+
+                uint8_t r, g, b;
+
+                if (pos < 85) {
+                    r = 255 - pos * 3;
+                    g = pos * 3;
+                    b = 0;
+                } else if (pos < 170) {
+                    uint8_t p = pos - 85;
+                    r = 0;
+                    g = 255 - p * 3;
+                    b = p * 3;
+                } else {
+                    uint8_t p = pos - 170;
+                    r = p * 3;
+                    g = 0;
+                    b = 255 - p * 3;
+                }
+
+                led_strip_set_pixel(context->strip, i, r, g, b);
+            }
+
+            led_strip_refresh(context->strip);
+            hue = static_cast<uint8_t>(hue + 4);
+            was_lit = true;
+        } else if (was_lit) {
+            led_strip_clear(context->strip);
+            led_strip_refresh(context->strip);
+            was_lit = false;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(40));
+    }
+}
+
+void InitializeListeningLed() {
+    led_strip_config_t strip_config = {};
+    strip_config.strip_gpio_num = WS2812_GPIO;
+    strip_config.max_leds = WS2812_LED_COUNT;
+    strip_config.led_model = LED_MODEL_WS2812;
+    strip_config.color_component_format =
+        LED_STRIP_COLOR_COMPONENT_FMT_GRB;
+    strip_config.flags.invert_out = false;
+
+    led_strip_rmt_config_t rmt_config = {};
+    rmt_config.clk_src = RMT_CLK_SRC_DEFAULT;
+    rmt_config.resolution_hz = 10 * 1000 * 1000;
+    rmt_config.mem_block_symbols = 64;
+    rmt_config.flags.with_dma = false;
+
+    esp_err_t err = led_strip_new_rmt_device(
+        &strip_config,
+        &rmt_config,
+        &listening_led_strip_);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "WS2812 init gagal: %s",
+                 esp_err_to_name(err));
+        listening_led_strip_ = nullptr;
+        return;
+    }
+
+    led_strip_clear(listening_led_strip_);
+    led_strip_refresh(listening_led_strip_);
+
+    static ListeningLedTaskContext context;
+    context.strip = listening_led_strip_;
+
+    if (xTaskCreate(
+            ListeningLedTask,
+            "listening_led",
+            3072,
+            &context,
+            2,
+            nullptr) != pdPASS) {
+        ESP_LOGE(TAG, "Gagal membuat task indikator listening");
+        led_strip_clear(listening_led_strip_);
+        led_strip_refresh(listening_led_strip_);
+        return;
+    }
+
+    ESP_LOGI(TAG, "WS2812 listening aktif pada GPIO%d",
+             WS2812_GPIO);
+}
+
+
     void InitializeDisplayI2c() {
         i2c_master_bus_config_t bus_config = {};
         bus_config.i2c_port = I2C_NUM_0;
@@ -337,6 +444,7 @@ public:
             MOTOR_RIGHT_IN2_PIN);
 
         InitializeVl53Test();
+        InitializeListeningLed();
 
         ESP_LOGI(TAG, "Pocket Wall-E C3 initialized");
     }
