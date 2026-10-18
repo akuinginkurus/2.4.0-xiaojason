@@ -1099,6 +1099,7 @@ idf_component_register(SRCS ${SOURCES}
                         pkolt__vl53l0x
                         esp_driver_i2s
                         esp_driver_ledc
+                        led_strip
                         esp_driver_jpeg
                         esp_driver_ppa
                         esp_driver_tsens
