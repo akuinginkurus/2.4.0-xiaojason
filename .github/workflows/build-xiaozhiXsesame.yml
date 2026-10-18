@@ -38,7 +38,7 @@ jobs:
         shell: bash
         run: |
           . "$IDF_PATH/export.sh"
-          python scripts/build.py xiaozhiXsesame --name xiaozhiXsesame
+          python scripts/build.py xiaozhiXsesame --name xiaozhixsesame
 
       - name: Verify firmware
         shell: bash
