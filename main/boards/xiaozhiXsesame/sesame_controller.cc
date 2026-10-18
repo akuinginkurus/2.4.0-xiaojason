@@ -409,8 +409,9 @@ bool sesameControllerInit() {
     }
 
     if (!initPca9685()) {
-        ESP_LOGE(TAG, "Inisialisasi PCA9685 gagal");
-        return false;
+    ESP_LOGW(TAG,
+             "PCA9685 belum siap; OLED tetap diaktifkan");
+    s_pca = nullptr;
     }
 
     s_commandQueue = xQueueCreate(
