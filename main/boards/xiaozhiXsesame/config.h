@@ -17,7 +17,7 @@
 #define AUDIO_I2S_GPIO_BCLK GPIO_NUM_2
 #define AUDIO_I2S_GPIO_WS   GPIO_NUM_1
 #define AUDIO_I2S_GPIO_DOUT GPIO_NUM_3
-#define AUDIO_I2S_GPIO_DIN  GPIO_NUM_8
+#define AUDIO_I2S_GPIO_DIN  GPIO_NUM_5
 
 // =====================================================
 // I2C: SSD1306 OLED + PCA9685
@@ -56,6 +56,9 @@
 
 #define ACTION_BUTTON_GPIO GPIO_NUM_0
 
+#define XSESAME_LISTENING_LED_GPIO GPIO_NUM_8
+#define XSESAME_LISTENING_LED_ON  0
+#define XSESAME_LISTENING_LED_OFF 1
 // =====================================================
 // WAKE WORD
 // Hi Lexin diatur melalui config.json.
