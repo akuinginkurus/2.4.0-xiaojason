@@ -21,6 +21,10 @@
 
 #define ACTION_BUTTON_GPIO GPIO_NUM_0
 
+// WS2812: 8 LED untuk indikator listening Jason
+#define WS2812_GPIO GPIO_NUM_10
+#define WS2812_LED_COUNT 8
+
 // MX1508 dual H-bridge.
 #define MOTOR_LEFT_IN1_PIN GPIO_NUM_5
 #define MOTOR_LEFT_IN2_PIN GPIO_NUM_6
