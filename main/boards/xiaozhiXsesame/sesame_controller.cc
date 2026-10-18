@@ -255,8 +255,18 @@ void setFace(const String& faceName) {
     }
 
     s_currentBitmap = bitmap;
-    memcpy(s_framebuffer, s_currentBitmap,
-           sizeof(s_framebuffer));
+    memset(s_framebuffer, 0, sizeof(s_framebuffer));
+
+for (int y = 0; y < 64; ++y) {
+    for (int x = 0; x < 128; ++x) {
+        size_t srcIndex = y * 16 + x / 8;
+
+        if (s_currentBitmap[srcIndex] & (0x80 >> (x % 8))) {
+            size_t dstIndex = (y / 8) * 128 + x;
+            s_framebuffer[dstIndex] |= (1 << (y % 8));
+        }
+    }
+}
 
     for (uint8_t page = 0; page < 8; ++page) {
         if (!oledCommand(0xB0 | page)) return;
