@@ -30,6 +30,13 @@ static const unsigned char* s_currentBitmap = nullptr;
 static FaceAnimMode s_faceMode = FACE_ANIM_ONCE;
 static bool s_initialized = false;
 
+static QueueHandle_t s_commandQueue = nullptr;
+static TaskHandle_t s_commandTask = nullptr;
+
+static constexpr size_t SESAME_COMMAND_LENGTH = 32;
+
+static void executeSesameCommand(const String& command);
+
 struct FaceEntry {
     const char* name;
     const unsigned char* bitmap;
