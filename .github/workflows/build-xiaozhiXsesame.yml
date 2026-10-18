@@ -1,6 +1,4 @@
 
-
-
 name: Build XiaozhiXSesame
 
 on:
@@ -8,6 +6,7 @@ on:
   push:
     branches:
       - main
+      - XiaozhiXSesame
     paths:
       - "main/**"
       - "partitions/**"
@@ -35,13 +34,11 @@ jobs:
           idf.py --version
           python --version
 
-      - name: Build XiaozhiXSesame
+      - name: Build firmware
         shell: bash
         run: |
           . "$IDF_PATH/export.sh"
-
-          python scripts/build.py xiaozhiXsesame \
-            --name xiaozhiXsesame \
+          python scripts/build.py xiaozhiXsesame --name xiaozhiXsesame
 
       - name: Verify firmware
         shell: bash
