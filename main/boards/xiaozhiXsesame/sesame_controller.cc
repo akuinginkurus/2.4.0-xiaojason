@@ -313,7 +313,28 @@ static String normalizeCommand(String command) {
     return command;
 }
 
-void sesameRunCommand(const String& requestedCommand) {
+static void executeSesameCommand(const String& requestedCommand) {
+
+void sesameRunCommand(const String& command) {
+    if (!s_initialized || s_commandQueue == nullptr) {
+        ESP_LOGW(TAG, "Controller belum siap");
+        return;
+    }
+
+    char buffer[SESAME_COMMAND_LENGTH] = {};
+    size_t length = command.size();
+
+    if (length >= sizeof(buffer)) {
+        length = sizeof(buffer) - 1;
+    }
+
+    memcpy(buffer, command.data(), length);
+
+    if (xQueueSend(s_commandQueue, buffer, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "Antrean penuh; perintah tidak dikirim");
+    }
+}
+    
     if (!s_initialized) {
         ESP_LOGE(TAG, "Controller belum diinisialisasi");
         return;
