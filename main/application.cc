@@ -915,6 +915,15 @@ void Application::HandleStateChangedEvent() {
     auto led = board.GetLed();
     led->OnStateChanged();
 
+        // LED eksternal GPIO 8: menyala hanya saat listening
+    gpio_set_direction(GPIO_NUM_8, GPIO_MODE_OUTPUT);
+
+    if (new_state == kDeviceStateListening) {
+        gpio_set_level(GPIO_NUM_8, 1);  // LED menyala
+    } else {
+        gpio_set_level(GPIO_NUM_8, 0);  // LED mati
+    }
+
     switch (new_state) {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
