@@ -1,5 +1,5 @@
 
-#include <driver/i2c_master.h>
+#include <Arduino.h>
 #include "sesame_controller.h"
 #include "config.h"
 #include "face-bitmaps.h"
@@ -36,13 +36,13 @@ static TaskHandle_t s_commandTask = nullptr;
 static constexpr size_t SESAME_COMMAND_LENGTH = 32;
 
 static void executeSesameCommand(const String& command);
+static void sesameCommandWorker(void* parameter);
 
 struct FaceEntry {
     const char* name;
     const unsigned char* bitmap;
 };
 
-// Menggunakan nama dan bitmap dari FACE_LIST asli.
 #define X(name) {#name, epd_bitmap_##name},
 static const FaceEntry s_faces[] = {
     FACE_LIST
@@ -50,23 +50,26 @@ static const FaceEntry s_faces[] = {
 #undef X
 
 static bool writeRegister(uint8_t reg, uint8_t value) {
-    if (!s_pca) return false;
+    if (s_pca == nullptr) return false;
 
     uint8_t data[2] = {reg, value};
-    return i2c_master_transmit(s_pca, data, sizeof(data), 100) == ESP_OK;
+    return i2c_master_transmit(
+        s_pca, data, sizeof(data), 100
+    ) == ESP_OK;
 }
 
 static bool oledCommand(uint8_t command) {
-    if (!s_oled) return false;
+    if (s_oled == nullptr) return false;
 
     uint8_t data[2] = {0x00, command};
-    return i2c_master_transmit(s_oled, data, sizeof(data), 100) == ESP_OK;
+    return i2c_master_transmit(
+        s_oled, data, sizeof(data), 100
+    ) == ESP_OK;
 }
 
 static bool oledWriteData(const uint8_t* data, size_t length) {
-    if (!s_oled || !data) return false;
+    if (s_oled == nullptr || data == nullptr) return false;
 
-    // Potongan kecil agar transaksi I2C tidak terlalu besar.
     uint8_t packet[17];
     packet[0] = 0x40;
 
@@ -88,22 +91,22 @@ static bool oledWriteData(const uint8_t* data, size_t length) {
 
 static bool initOled() {
     const uint8_t initSequence[] = {
-        0xAE,       // Display OFF
+        0xAE,
         0xD5, 0x80,
-        0xA8, 0x3F, // Multiplex 1/64
+        0xA8, 0x3F,
         0xD3, 0x00,
         0x40,
-        0x8D, 0x14, // Charge pump
-        0x20, 0x02, // Page addressing mode
-        0xA1,       // Segment remap
-        0xC8,       // COM scan direction
+        0x8D, 0x14,
+        0x20, 0x02,
+        0xA1,
+        0xC8,
         0xDA, 0x12,
         0x81, 0x7F,
         0xD9, 0xF1,
         0xDB, 0x40,
         0xA4,
         0xA6,
-        0xAF        // Display ON
+        0xAF
     };
 
     for (uint8_t command : initSequence) {
@@ -117,7 +120,8 @@ static bool initOled() {
         if (!oledCommand(0x00)) return false;
         if (!oledCommand(0x10)) return false;
 
-        if (!oledWriteData(&s_framebuffer[page * 128], 128)) {
+        if (!oledWriteData(
+                &s_framebuffer[page * 128], 128)) {
             return false;
         }
     }
@@ -126,19 +130,16 @@ static bool initOled() {
 }
 
 static bool initPca9685() {
-    // MODE1: auto-increment, oscillator wake/sleep setup.
     if (!writeRegister(0x00, 0x10)) return false;
-
-    // 25 MHz / (4096 * (121 + 1)) = sekitar 50 Hz.
     if (!writeRegister(0xFE, 121)) return false;
-
-    if (!writeRegister(0x01, 0x04)) return false; // MODE2 OUTDRV
-    if (!writeRegister(0x00, 0x20)) return false; // Wake + auto increment
+    if (!writeRegister(0x01, 0x04)) return false;
+    if (!writeRegister(0x00, 0x20)) return false;
 
     vTaskDelay(pdMS_TO_TICKS(10));
 
-    // Pastikan semua kanal servo awalnya pada posisi tengah.
-    for (uint8_t channel = 0; channel < XSESAME_SERVO_COUNT; ++channel) {
+    for (uint8_t channel = 0;
+         channel < XSESAME_SERVO_COUNT;
+         ++channel) {
         setServoAngle(channel, 90);
     }
 
@@ -147,6 +148,7 @@ static bool initPca9685() {
 
 static bool initI2cDevices() {
     i2c_master_bus_config_t busConfig = {};
+
     busConfig.i2c_port = XSESAME_I2C_PORT;
     busConfig.sda_io_num = XSESAME_I2C_SDA_PIN;
     busConfig.scl_io_num = XSESAME_I2C_SCL_PIN;
@@ -155,8 +157,10 @@ static bool initI2cDevices() {
     busConfig.flags.enable_internal_pullup = true;
 
     esp_err_t err = i2c_new_master_bus(&busConfig, &s_bus);
+
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Gagal membuat bus I2C: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Gagal membuat bus I2C: %s",
+                 esp_err_to_name(err));
         return false;
     }
 
@@ -165,9 +169,12 @@ static bool initI2cDevices() {
     oledConfig.device_address = XSESAME_OLED_I2C_ADDRESS;
     oledConfig.scl_speed_hz = XSESAME_I2C_FREQ_HZ;
 
-    err = i2c_master_bus_add_device(s_bus, &oledConfig, &s_oled);
+    err = i2c_master_bus_add_device(
+        s_bus, &oledConfig, &s_oled);
+
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "OLED tidak dapat ditambahkan: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Gagal menambahkan OLED: %s",
+                 esp_err_to_name(err));
         return false;
     }
 
@@ -176,96 +183,90 @@ static bool initI2cDevices() {
     pcaConfig.device_address = XSESAME_PCA9685_ADDRESS;
     pcaConfig.scl_speed_hz = XSESAME_I2C_FREQ_HZ;
 
-    err = i2c_master_bus_add_device(s_bus, &pcaConfig, &s_pca);
+    err = i2c_master_bus_add_device(
+        s_bus, &pcaConfig, &s_pca);
+
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "PCA9685 tidak dapat ditambahkan: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Gagal menambahkan PCA9685: %s",
+                 esp_err_to_name(err));
         return false;
     }
 
-    return true;
-}
-
-bool sesameControllerInit() {
-    if (s_initialized) return true;
-
-    if (!initI2cDevices()) return false;
-
-    if (!initOled()) {
-        ESP_LOGE(TAG, "Inisialisasi SSD1306 gagal");
-        return false;
-    }
-
-    if (!initPca9685()) {
-        ESP_LOGE(TAG, "Inisialisasi PCA9685 gagal");
-        return false;
-    }
-
-    s_initialized = true;
-    setFace("idle");
-
-    ESP_LOGI(TAG, "OLED SSD1306 dan PCA9685 siap");
     return true;
 }
 
 void setServoAngle(uint8_t channel, int angle) {
-    if (!s_pca || channel >= XSESAME_SERVO_COUNT) return;
+    if (s_pca == nullptr ||
+        channel >= XSESAME_SERVO_COUNT) {
+        return;
+    }
 
     angle = std::max(0, std::min(180, angle));
 
     const uint32_t pulseMin =
-        (XSESAME_SERVO_MIN_PULSE_US * 4096UL * XSESAME_SERVO_FREQUENCY) / 1000000UL;
+        (XSESAME_SERVO_MIN_PULSE_US * 4096UL *
+         XSESAME_SERVO_FREQUENCY) / 1000000UL;
+
     const uint32_t pulseMax =
-        (XSESAME_SERVO_MAX_PULSE_US * 4096UL * XSESAME_SERVO_FREQUENCY) / 1000000UL;
+        (XSESAME_SERVO_MAX_PULSE_US * 4096UL *
+         XSESAME_SERVO_FREQUENCY) / 1000000UL;
 
     uint32_t pulse = pulseMin +
-        ((pulseMax - pulseMin) * static_cast<uint32_t>(angle)) / 180UL;
+        ((pulseMax - pulseMin) *
+         static_cast<uint32_t>(angle)) / 180UL;
 
     pulse = std::min<uint32_t>(pulse, 4095);
 
     uint8_t reg = 0x06 + (channel * 4);
-    writeRegister(reg, 0);                       // ON low
-    writeRegister(reg + 1, 0);                   // ON high
-    writeRegister(reg + 2, pulse & 0xFF);        // OFF low
-    writeRegister(reg + 3, (pulse >> 8) & 0x0F); // OFF high
+
+    writeRegister(reg, 0);
+    writeRegister(reg + 1, 0);
+    writeRegister(reg + 2, pulse & 0xFF);
+    writeRegister(reg + 3, (pulse >> 8) & 0x0F);
 }
 
 void setFace(const String& faceName) {
-    if (!s_oled) return;
+    if (s_oled == nullptr) return;
 
     const unsigned char* bitmap = nullptr;
 
     for (const auto& face : s_faces) {
-        if (faceName == face.name && face.bitmap != nullptr) {
+        if (faceName == face.name &&
+            face.bitmap != nullptr) {
             bitmap = face.bitmap;
             break;
         }
     }
 
-    // Fallback bila bitmap dengan nama yang diminta tidak tersedia.
-    if (!bitmap) {
+    if (bitmap == nullptr) {
         for (const auto& face : s_faces) {
-            if (strcmp(face.name, "idle") == 0 && face.bitmap != nullptr) {
+            if (strcmp(face.name, "idle") == 0 &&
+                face.bitmap != nullptr) {
                 bitmap = face.bitmap;
                 break;
             }
         }
     }
 
-    if (!bitmap) {
-        ESP_LOGW(TAG, "Bitmap wajah tidak tersedia: %s", faceName.c_str());
+    if (bitmap == nullptr) {
+        ESP_LOGW(TAG, "Bitmap tidak tersedia: %s",
+                 faceName.c_str());
         return;
     }
 
     s_currentBitmap = bitmap;
-
-    // Bitmap image2cpp 128x64 monochrome, 1 bit per pixel.
-    memcpy(s_framebuffer, s_currentBitmap, sizeof(s_framebuffer));
+    memcpy(s_framebuffer, s_currentBitmap,
+           sizeof(s_framebuffer));
 
     for (uint8_t page = 0; page < 8; ++page) {
-        oledCommand(0xB0 | page);
-        oledCommand(0x00);
-        oledCommand(0x10);
-        oledWriteData(&s_framebuffer[page * 128], 128);
+        if (!oledCommand(0xB0 | page)) return;
+        if (!oledCommand(0x00)) return;
+        if (!oledCommand(0x10)) return;
+
+        if (!oledWriteData(
+                &s_framebuffer[page * 128], 128)) {
+            return;
+        }
     }
 }
 
@@ -273,16 +274,18 @@ void setFaceMode(FaceAnimMode mode) {
     s_faceMode = mode;
 }
 
-void setFaceWithMode(const String& faceName, FaceAnimMode mode) {
+void setFaceWithMode(
+    const String& faceName,
+    FaceAnimMode mode) {
     setFaceMode(mode);
     setFace(faceName);
 }
 
 void delayWithFace(unsigned long ms) {
-    // Potong jeda menjadi interval pendek supaya task lain tetap berjalan.
-    // Bitmap statis tetap tampil selama gerakan berlangsung.
     while (ms > 0) {
-        const unsigned long slice = std::min<unsigned long>(ms, 20);
+        const unsigned long slice =
+            std::min<unsigned long>(ms, 20);
+
         vTaskDelay(pdMS_TO_TICKS(slice));
         ms -= slice;
     }
@@ -307,34 +310,20 @@ void sesameStopMovement() {
 }
 
 static String normalizeCommand(String command) {
-    std::transform(command.begin(), command.end(), command.begin(),
-        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::transform(
+        command.begin(),
+        command.end(),
+        command.begin(),
+        [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        }
+    );
 
     return command;
 }
 
-static void executeSesameCommand(const String& requestedCommand) {
-
-void sesameRunCommand(const String& command) {
-    if (!s_initialized || s_commandQueue == nullptr) {
-        ESP_LOGW(TAG, "Controller belum siap");
-        return;
-    }
-
-    char buffer[SESAME_COMMAND_LENGTH] = {};
-    size_t length = command.size();
-
-    if (length >= sizeof(buffer)) {
-        length = sizeof(buffer) - 1;
-    }
-
-    memcpy(buffer, command.data(), length);
-
-    if (xQueueSend(s_commandQueue, buffer, 0) != pdTRUE) {
-        ESP_LOGW(TAG, "Antrean penuh; perintah tidak dikirim");
-    }
-}
-    
+static void executeSesameCommand(
+    const String& requestedCommand) {
     if (!s_initialized) {
         ESP_LOGE(TAG, "Controller belum diinisialisasi");
         return;
@@ -369,7 +358,8 @@ void sesameRunCommand(const String& command) {
         runShakePose();
     } else if (command == "shrug") {
         runShrugPose();
-    } else if (command == "dead" || command == "pura-pura mati") {
+    } else if (command == "dead" ||
+               command == "pura-pura mati") {
         runDeadPose();
     } else if (command == "crab" || command == "kepiting") {
         runCrabPose();
@@ -383,11 +373,95 @@ void sesameRunCommand(const String& command) {
         runTurnRight();
     } else if (command == "idle") {
         enterIdle();
-        currentCommand = "";
     } else {
-        ESP_LOGW(TAG, "Perintah gerakan tidak dikenal: %s", command.c_str());
-        currentCommand = "";
+        ESP_LOGW(TAG, "Gerakan tidak dikenal: %s",
+                 command.c_str());
     }
 
     currentCommand = "";
+}
+
+static void sesameCommandWorker(void* parameter) {
+    (void)parameter;
+
+    char commandBuffer[SESAME_COMMAND_LENGTH];
+
+    for (;;) {
+        memset(commandBuffer, 0, sizeof(commandBuffer));
+
+        if (xQueueReceive(
+                s_commandQueue,
+                commandBuffer,
+                portMAX_DELAY) == pdTRUE) {
+            executeSesameCommand(String(commandBuffer));
+        }
+    }
+}
+
+bool sesameControllerInit() {
+    if (s_initialized) return true;
+
+    if (!initI2cDevices()) return false;
+
+    if (!initOled()) {
+        ESP_LOGE(TAG, "Inisialisasi SSD1306 gagal");
+        return false;
+    }
+
+    if (!initPca9685()) {
+        ESP_LOGE(TAG, "Inisialisasi PCA9685 gagal");
+        return false;
+    }
+
+    s_commandQueue = xQueueCreate(
+        4, SESAME_COMMAND_LENGTH);
+
+    if (s_commandQueue == nullptr) {
+        ESP_LOGE(TAG, "Gagal membuat antrean perintah");
+        return false;
+    }
+
+    BaseType_t taskResult = xTaskCreate(
+        sesameCommandWorker,
+        "sesame_cmd",
+        4096,
+        nullptr,
+        4,
+        &s_commandTask
+    );
+
+    if (taskResult != pdPASS) {
+        ESP_LOGE(TAG, "Gagal membuat task perintah");
+        vQueueDelete(s_commandQueue);
+        s_commandQueue = nullptr;
+        return false;
+    }
+
+    s_initialized = true;
+    setFace("idle");
+
+    ESP_LOGI(TAG,
+             "SSD1306, PCA9685, dan antrean perintah siap");
+
+    return true;
+}
+
+void sesameRunCommand(const String& command) {
+    if (!s_initialized || s_commandQueue == nullptr) {
+        ESP_LOGW(TAG, "Controller belum siap");
+        return;
+    }
+
+    char buffer[SESAME_COMMAND_LENGTH] = {};
+    size_t length = command.size();
+
+    if (length >= sizeof(buffer)) {
+        length = sizeof(buffer) - 1;
+    }
+
+    memcpy(buffer, command.data(), length);
+
+    if (xQueueSend(s_commandQueue, buffer, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "Antrean penuh; perintah tidak dikirim");
+    }
 }
