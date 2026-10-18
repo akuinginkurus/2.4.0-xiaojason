@@ -9,7 +9,7 @@
             "sdkconfig_append": [
                 "CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y",
                 "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v2/4m.csv\"",
-                "CONFIG_BOARD_TYPE_XIAOZHI_XSESAME=y",
+                "CONFIG_BOARD_TYPE_XIAOZHIXSESAME=y",
                 "CONFIG_LANGUAGE_EN_US=y",
                 "CONFIG_LANGUAGE_VI_VN=n",
                 "CONFIG_USE_ESP_WAKE_WORD=y",
