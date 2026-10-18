@@ -35,7 +35,7 @@ jobs:
           idf.py --version
           python --version
 
-      - name: Build Pocket Wall-E C3
+      - name: Build XiaozhiXSesame
         shell: bash
         run: |
           . "$IDF_PATH/export.sh"
@@ -52,7 +52,7 @@ jobs:
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pocket-wall-e-c3-firmware
+          name: xiaozhiXsesame-firmware
           path: build/merged-binary.bin
           if-no-files-found: error
           retention-days: 14
