@@ -439,7 +439,6 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
         display->SetChatMessage("assistant", display_title.c_str());
         display->SetStatus("Memutar Lagu");
         display->SetEmotion("music");
-        display->SetFaceState(FaceState::Music);
         display->ShowNotification(display_title.c_str(), 5000);
     }
 
@@ -869,7 +868,6 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
             display->SetChatMessage("system", "");
             display->SetStatus(Lang::Strings::STANDBY);
             display->SetEmotion("neutral");
-            display->SetFaceState(FaceState::Idle);
         }
     } else {
         ESP_LOGI(TAG, ">> DETEKSI: Lagu YouTube \"%s\" DIHENTIKAN <<", title.c_str());
@@ -879,7 +877,6 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
             display->SetChatMessage("system", "");
             display->SetStatus(Lang::Strings::STANDBY);
             display->SetEmotion("neutral");
-            display->SetFaceState(FaceState::Idle);
         }
     }
 
