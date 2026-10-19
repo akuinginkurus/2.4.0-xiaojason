@@ -86,6 +86,13 @@ bool MotorController::Drive(int left_speed, int right_speed,
                             uint32_t duration_ms) {
     // Saat tepi terdeteksi, hanya gerakan mundur dengan kedua roda
     // yang diperbolehkan. Maju dan belok diblokir.
+
+    if ((left_speed != 0 || right_speed != 0) &&
+    movement_check_) {
+    SetEdgeDetected(
+        movement_check_(left_speed, right_speed));
+    }
+    
     if (edge_detected_.load() &&
         (left_speed > 0 || right_speed > 0)) {
         ESP_LOGW(TAG, "Gerakan diblokir: tepi meja terdeteksi");
