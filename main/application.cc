@@ -10,12 +10,15 @@
 #include "system_info.h"
 #include "text_glyph_payload.h"
 #include "websocket_protocol.h"
+#include "youtube_audio_poller.h"
 
 #include <driver/gpio.h>
 #include <esp_log.h>
 #include <arpa/inet.h>
 #include <cJSON.h>
 #include <cstring>
+#include <algorithm>
+#include <cctype>
 
 #define TAG "Application"
 
@@ -69,6 +72,8 @@ void Application::Initialize() {
     auto codec = board.GetAudioCodec();
     audio_service_.Initialize(codec);
     audio_service_.Start();
+
+    YouTubeAudioPoller::GetInstance().Start();
 
     AudioServiceCallbacks callbacks;
     callbacks.on_send_queue_available = [this]() {
@@ -559,6 +564,25 @@ void Application::InitializeProtocol() {
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
+
+                                        if (youtube_song_requested_) {
+                        std::string query =
+                            std::move(youtube_song_query_);
+
+                        youtube_song_query_.clear();
+                        youtube_song_requested_ = false;
+
+                        if (protocol_ &&
+                            protocol_->IsAudioChannelOpened()) {
+                            protocol_->CloseAudioChannel();
+                        }
+
+                        SetDeviceState(kDeviceStateIdle);
+
+                        YouTubeAudioPoller::GetInstance().PlayQuery(query);
+                        return;
+                                        }
+                    
                     if (GetDeviceState() == kDeviceStateSpeaking) {
                         if (listening_mode_ == kListeningModeManualStop) {
                             SetDeviceState(kDeviceStateIdle);
@@ -596,6 +620,38 @@ void Application::InitializeProtocol() {
                           glyphs = std::move(glyphs), bpp]() {
                     display->AddTextGlyphs(glyphs, bpp);
                     display->SetChatMessage("user", message.c_str());
+                                                  std::string lower_msg = message;
+                    std::transform(lower_msg.begin(), lower_msg.end(),
+                                   lower_msg.begin(),
+                                   [](unsigned char c) {
+                                       return static_cast<char>(std::tolower(c));
+                                   });
+
+                    const std::vector<std::string> prefixes = {
+                        "tolong putarkan lagu ",
+                        "tolong putar lagu ",
+                        "tolong putarkan musik ",
+                        "tolong putar musik ",
+                        "putarkan lagu ",
+                        "putar lagu ",
+                        "putarkan musik ",
+                        "putar musik ",
+                        "play song ",
+                        "play music "
+                    };
+
+                    for (const auto& prefix : prefixes) {
+                        if (lower_msg.rfind(prefix, 0) == 0 &&
+                            message.size() > prefix.size()) {
+                            youtube_song_query_ =
+                                message.substr(prefix.size());
+                            youtube_song_requested_ = true;
+
+                            ESP_LOGI(TAG, "YouTube request: %s",
+                                     youtube_song_query_.c_str());
+                            break;
+                        }
+                    }
                 });
             }
         } else if (strcmp(type->valuestring, "llm") == 0) {
