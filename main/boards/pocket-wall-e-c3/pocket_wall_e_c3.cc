@@ -138,45 +138,42 @@ private:
         uint32_t log_counter = 0;
 
         while (true) {
-            vl53l0x_data_t data = {};
-
-            esp_err_t err =
-                vl53l0x_single_measure(context->sensor, &data);
-
-            // Nilai meja yang diuji: sekitar 48–57 mm.
-            // Nilai di atas 150 mm berarti tepi meja.
-            // Pembacaan gagal juga dianggap kondisi berbahaya.
-            const bool edge_detected =
-                err != ESP_OK ||
-                !data.valid ||
-                data.distance_mm > 150;
-
-            context->motors->SetEdgeDetected(edge_detected);
-
-            if (log_counter == 0) {
-                if (err == ESP_OK && data.valid) {
-                    ESP_LOGI(
-                        "VL53_TEST",
-                        "Jarak: %u mm | Status: %u | Tepi: %s",
-                        (unsigned)data.distance_mm,
-                        (unsigned)data.range_status,
-                        edge_detected ? "YA" : "tidak");
-                } else {
-                    ESP_LOGW(
-                        "VL53_TEST",
-                        "Pembacaan gagal: err=%s valid=%d "
-                        "jarak=%u status=%u",
-                        esp_err_to_name(err),
-                        (int)data.valid,
-                        (unsigned)data.distance_mm,
-                        (unsigned)data.range_status);
-                }
-            }
-
-            log_counter = (log_counter + 1) % 10;
-            vTaskDelay(pdMS_TO_TICKS(50));
-        }
+    // Jangan membaca sensor selama robot tidak bergerak.
+    // Sensor baru aktif ketika motor benar-benar bergerak.
+    if (!context->motors->IsMoving()) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+        continue;
     }
+
+    vl53l0x_data_t data = {};
+
+    esp_err_t err =
+        vl53l0x_single_measure(context->sensor, &data);
+
+    const bool edge_detected =
+        err != ESP_OK ||
+        !data.valid ||
+        data.distance_mm > 150;
+
+    context->motors->SetEdgeDetected(edge_detected);
+
+    if (err == ESP_OK && data.valid) {
+        ESP_LOGI(
+            "VL53_TEST",
+            "Jarak: %u mm | Status: %u | Tepi: %s",
+            (unsigned)data.distance_mm,
+            (unsigned)data.range_status,
+            edge_detected ? "YA" : "tidak");
+    } else {
+        ESP_LOGW(
+            "VL53_TEST",
+            "Pembacaan gagal: err=%s valid=%d",
+            esp_err_to_name(err),
+            (int)data.valid);
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(50));
+        }
 
     void InitializeVl53Test() {
         ESP_LOGI("VL53_TEST", "Memulai sensor VL53L0X");
