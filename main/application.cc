@@ -397,7 +397,7 @@ void Application::CheckAssetsVersion() {
             assets.Download(download_url, [this, display](int progress, size_t speed) -> void {
                 char buffer[32];
                 snprintf(buffer, sizeof(buffer), "%d%% %uKB/s", progress, speed / 1024);
-                Schedule([display, message = std::string(buffer)]() {
+                Schedule([this, display, message = std::string(buffer)]() {
                     display->SetChatMessage("system", message.c_str());
                 });
             });
