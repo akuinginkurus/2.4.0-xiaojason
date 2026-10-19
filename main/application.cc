@@ -318,12 +318,12 @@ void Application::HandleNetworkDisconnectedEvent() {
 
 void Application::HandleActivationDoneEvent() {
     ESP_LOGI(TAG, "Activation done");
-
+    
     SystemInfo::PrintHeapStats();
     SetDeviceState(kDeviceStateIdle);
 
-// Start YouTube polling after activation and network setup are complete.
-YouTubeAudioPoller::GetInstance().Start();
+    // Start YouTube polling after activation and network setup are complete.
+    YouTubeAudioPoller::GetInstance().Start();
     
     has_server_time_ = ota_->HasServerTime();
 
