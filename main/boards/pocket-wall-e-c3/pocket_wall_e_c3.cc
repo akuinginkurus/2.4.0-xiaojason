@@ -8,7 +8,7 @@
 extern "C" {
 #include "vl53l0x.h"
 }
-
+#include <driver/gpio.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <driver/i2c_master.h>
