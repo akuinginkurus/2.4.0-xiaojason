@@ -281,9 +281,9 @@ private:
                 mode = 2;
             }
 
-            gpio_set_level(GPIO_NUM_8, mode == 1 ? 0 : 1);
+            gpio_set_level(GPIO_NUM_8, mode == 1 ? 1 : 0);
 
-            if (mode == 2 && previous_mode != 2) {
+            if (mode != 2 && previous_mode == 2) {
                 pos = 0;
                 direction = 1;
             }
