@@ -795,8 +795,8 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                             frames_pushed++;
                             session_frames++;
                             if (frames_pushed == 1 || frames_pushed % 50 == 0) {
-                                ESP_LOGI(TAG, "Audio frame #%d pushed to decoder (len=%u, q_size=%u)",
-                                         frames_pushed, (unsigned int)pkt_len, (unsigned int)app.GetAudioService().GetDecodeQueueSize());
+                                ESP_LOGI(TAG, "Audio frame #%d pushed to decoder (len=%u)",
+         frames_pushed, (unsigned int)pkt_len);
                             }
                         }
 
