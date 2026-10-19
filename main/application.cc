@@ -563,12 +563,10 @@ void Application::InitializeProtocol() {
                     aborted_ = false;
                     SetDeviceState(kDeviceStateSpeaking);
                 });
-            } else if (strcmp(state->valuestring, "stop") == 0) {
+                        } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
-
-                                        if (youtube_song_requested_) {
-                        std::string query =
-                            std::move(youtube_song_query_);
+                    if (youtube_song_requested_) {
+                        std::string query = std::move(youtube_song_query_);
 
                         youtube_song_query_.clear();
                         youtube_song_requested_ = false;
@@ -580,10 +578,12 @@ void Application::InitializeProtocol() {
 
                         SetDeviceState(kDeviceStateIdle);
 
-                        YouTubeAudioPoller::GetInstance().PlayQuery(query);
+                        if (!query.empty()) {
+                            YouTubeAudioPoller::GetInstance().PlayQuery(query);
+                        }
                         return;
-                                        }
-                    
+                    }
+
                     if (GetDeviceState() == kDeviceStateSpeaking) {
                         if (listening_mode_ == kListeningModeManualStop) {
                             SetDeviceState(kDeviceStateIdle);
