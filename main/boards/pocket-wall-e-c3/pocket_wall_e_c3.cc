@@ -9,6 +9,7 @@
 extern "C" {
 #include "vl53l0x.h"
 }
+
 #include <driver/gpio.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -121,25 +122,35 @@ private:
 
     Button action_button_;
     MotorController* motor_controller_ = nullptr;
-    vl53l0x_handle_t floor_sensor_ = nullptr;
 
-    // WS2812 indikator listening
+    vl53l0x_handle_t floor_sensor_ = nullptr;
+    bool floor_sensor_initialized_ = false;
+
     led_strip_handle_t listening_led_strip_ = nullptr;
 
     struct ListeningLedTaskContext {
         led_strip_handle_t strip;
     };
 
-    void InitializeVl53Test() {
-        ESP_LOGI("VL53_TEST", "Memulai sensor VL53L0X");
+    // Fungsi ini hanya dipanggil dari callback perintah gerak.
+    // Tidak ada inisialisasi, kalibrasi, atau pembacaan jarak
+    // VL53L0X yang dijalankan oleh fungsi startup board.
+    bool InitializeVl53OnMovement() {
+        if (floor_sensor_initialized_ && floor_sensor_ != nullptr) {
+            return true;
+        }
 
-        esp_err_t err =
-            vl53l0x_create(&floor_sensor_, display_i2c_bus_);
+        ESP_LOGI("VL53_TEST",
+                 "Perintah gerak diterima; menyiapkan VL53L0X");
+
+        esp_err_t err = vl53l0x_create(
+            &floor_sensor_, display_i2c_bus_);
 
         if (err != ESP_OK) {
             ESP_LOGE("VL53_TEST", "Gagal membuat sensor: %s",
                      esp_err_to_name(err));
-            return;
+            floor_sensor_ = nullptr;
+            return false;
         }
 
         err = vl53l0x_init(floor_sensor_);
@@ -147,7 +158,7 @@ private:
         if (err != ESP_OK) {
             ESP_LOGE("VL53_TEST", "Inisialisasi sensor gagal: %s",
                      esp_err_to_name(err));
-            return;
+            return false;
         }
 
         vl53l0x_ref_spad_calibration_t spad_cal = {};
@@ -158,7 +169,7 @@ private:
         if (err != ESP_OK) {
             ESP_LOGE("VL53_TEST", "Kalibrasi SPAD gagal: %s",
                      esp_err_to_name(err));
-            return;
+            return false;
         }
 
         vl53l0x_ref_calibration_t ref_cal = {};
@@ -169,13 +180,8 @@ private:
         if (err != ESP_OK) {
             ESP_LOGE("VL53_TEST", "Kalibrasi referensi gagal: %s",
                      esp_err_to_name(err));
-            return;
+            return false;
         }
-
-        ESP_LOGI("VL53_TEST",
-                 "Kalibrasi OK: SPAD=%u aperture=%d",
-                 (unsigned)spad_cal.count,
-                 (int)spad_cal.is_aperture);
 
         err = vl53l0x_set_profile(
             floor_sensor_, VL53L0X_PROFILE_DEFAULT);
@@ -183,25 +189,32 @@ private:
         if (err != ESP_OK) {
             ESP_LOGE("VL53_TEST", "Gagal mengatur profil: %s",
                      esp_err_to_name(err));
-            return;
+            return false;
         }
 
-        // Pengukuran hanya dilakukan ketika ada perintah gerak.
+        floor_sensor_initialized_ = true;
+
+        ESP_LOGI("VL53_TEST", "Sensor siap digunakan saat bergerak");
+        return true;
+    }
+
+    void InitializeVl53Test() {
+        // Hanya mendaftarkan callback saat startup.
+        // Tidak membuat sensor, kalibrasi, atau membaca jarak di sini.
         motor_controller_->SetMovementCheck(
             [this](int, int) -> bool {
-                if (floor_sensor_ == nullptr) {
-                    ESP_LOGW("VL53_TEST", "Sensor belum tersedia");
+                if (!InitializeVl53OnMovement()) {
+                    ESP_LOGW("VL53_TEST",
+                             "Sensor tidak siap; gerakan diblokir");
                     return true;
                 }
 
                 vl53l0x_data_t data = {};
 
+                // Satu pengukuran untuk setiap perintah gerak.
                 esp_err_t measure_err =
                     vl53l0x_single_measure(floor_sensor_, &data);
 
-                // Jarak di atas 150 mm dianggap tepi meja.
-                // Pengukuran gagal atau data tidak valid juga
-                // diperlakukan sebagai kondisi berbahaya.
                 const bool edge_detected =
                     measure_err != ESP_OK ||
                     !data.valid ||
@@ -268,8 +281,6 @@ private:
                 mode = 2;
             }
 
-            // LED biru onboard GPIO 8: aktif LOW.
-            // Listening = ON; speaking/idle = OFF.
             gpio_set_level(GPIO_NUM_8, mode == 1 ? 0 : 1);
 
             if (mode == 2 && previous_mode != 2) {
@@ -280,17 +291,14 @@ private:
             previous_mode = mode;
 
             if (mode == 1) {
-                // LISTENING: delapan LED hijau stabil.
                 for (int i = 0; i < WS2812_LED_COUNT; i++) {
-                    led_strip_set_pixel(
-                        context->strip, i, 0, 255, 0);
+                    led_strip_set_pixel(context->strip, i, 0, 255, 0);
                 }
 
                 led_strip_refresh(context->strip);
                 pixels_lit = true;
 
             } else if (mode == 2) {
-                // SPEAKING: scanner warna-warni kiri-kanan.
                 for (int i = 0; i < WS2812_LED_COUNT; i++) {
                     int distance = i > pos ? i - pos : pos - i;
 
@@ -312,8 +320,7 @@ private:
                     g = g * brightness / 255;
                     b = b * brightness / 255;
 
-                    led_strip_set_pixel(
-                        context->strip, i, r, g, b);
+                    led_strip_set_pixel(context->strip, i, r, g, b);
                 }
 
                 led_strip_refresh(context->strip);
@@ -332,7 +339,6 @@ private:
                 color_phase += 13;
 
             } else if (pixels_lit) {
-                // IDLE/STANDBY: RGB mati.
                 led_strip_clear(context->strip);
                 led_strip_refresh(context->strip);
                 pixels_lit = false;
@@ -343,8 +349,6 @@ private:
     }
 
     void InitializeListeningLed() {
-        // LED biru onboard ESP32-C3 SuperMini di GPIO 8.
-        // Umumnya aktif LOW.
         gpio_reset_pin(GPIO_NUM_8);
         ESP_ERROR_CHECK(
             gpio_set_direction(GPIO_NUM_8, GPIO_MODE_OUTPUT));
@@ -365,9 +369,7 @@ private:
         rmt_config.flags.with_dma = false;
 
         esp_err_t err = led_strip_new_rmt_device(
-            &strip_config,
-            &rmt_config,
-            &listening_led_strip_);
+            &strip_config, &rmt_config, &listening_led_strip_);
 
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "WS2812 init gagal: %s",
@@ -383,12 +385,8 @@ private:
         context.strip = listening_led_strip_;
 
         if (xTaskCreate(
-                ListeningLedTask,
-                "listening_led",
-                3072,
-                &context,
-                2,
-                nullptr) != pdPASS) {
+                ListeningLedTask, "listening_led", 3072,
+                &context, 2, nullptr) != pdPASS) {
             ESP_LOGE(TAG, "Gagal membuat task indikator listening");
             led_strip_clear(listening_led_strip_);
             led_strip_refresh(listening_led_strip_);
@@ -487,7 +485,9 @@ public:
             MOTOR_RIGHT_IN1_PIN,
             MOTOR_RIGHT_IN2_PIN);
 
+        // Hanya mendaftarkan callback; sensor belum disentuh.
         InitializeVl53Test();
+
         InitializeListeningLed();
 
         ESP_LOGI(TAG, "Pocket Wall-E C3 initialized");
