@@ -1236,6 +1236,14 @@ void Application::SetAecMode(AecMode mode) {
 
 void Application::PlaySound(const std::string_view& sound) { audio_service_.PlaySound(sound); }
 
+void Application::CloseAudioChannel() {
+    Schedule([this]() {
+        if (protocol_ && protocol_->IsAudioChannelOpened()) {
+            protocol_->CloseAudioChannel();
+        }
+    });
+}
+
 void Application::ResetProtocol() {
     Schedule([this]() {
         // Close audio channel if opened
