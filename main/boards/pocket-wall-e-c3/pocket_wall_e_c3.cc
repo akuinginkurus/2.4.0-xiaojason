@@ -1,3 +1,4 @@
+
 #include "application.h"
 #include "audio/codecs/no_audio_codec.h"
 #include "button.h"
@@ -121,62 +122,13 @@ private:
     Button action_button_;
     MotorController* motor_controller_ = nullptr;
     vl53l0x_handle_t floor_sensor_ = nullptr;
+
     // WS2812 indikator listening
     led_strip_handle_t listening_led_strip_ = nullptr;
 
     struct ListeningLedTaskContext {
-    led_strip_handle_t strip;
+        led_strip_handle_t strip;
     };
-
-    struct Vl53TaskContext {
-        vl53l0x_handle_t sensor;
-        MotorController* motors;
-    };
-
-    static void Vl53TestTask(void* arg) {
-        auto* context = static_cast<Vl53TaskContext*>(arg);
-        uint32_t log_counter = 0;
-
-        while (true) {
-            vl53l0x_data_t data = {};
-
-            esp_err_t err =
-                vl53l0x_single_measure(context->sensor, &data);
-
-            // Nilai meja yang diuji: sekitar 48–57 mm.
-            // Nilai di atas 150 mm berarti tepi meja.
-            // Pembacaan gagal juga dianggap kondisi berbahaya.
-            const bool edge_detected =
-                err != ESP_OK ||
-                !data.valid ||
-                data.distance_mm > 150;
-
-            context->motors->SetEdgeDetected(edge_detected);
-
-            if (log_counter == 0) {
-                if (err == ESP_OK && data.valid) {
-                    ESP_LOGI(
-                        "VL53_TEST",
-                        "Jarak: %u mm | Status: %u | Tepi: %s",
-                        (unsigned)data.distance_mm,
-                        (unsigned)data.range_status,
-                        edge_detected ? "YA" : "tidak");
-                } else {
-                    ESP_LOGW(
-                        "VL53_TEST",
-                        "Pembacaan gagal: err=%s valid=%d "
-                        "jarak=%u status=%u",
-                        esp_err_to_name(err),
-                        (int)data.valid,
-                        (unsigned)data.distance_mm,
-                        (unsigned)data.range_status);
-                }
-            }
-
-            log_counter = (log_counter + 1) % 10;
-            vTaskDelay(pdMS_TO_TICKS(50));
-        }
-    }
 
     void InitializeVl53Test() {
         ESP_LOGI("VL53_TEST", "Memulai sensor VL53L0X");
@@ -234,198 +186,218 @@ private:
             return;
         }
 
-        // Konteks static tetap tersedia selama task berjalan.
-        static Vl53TaskContext context;
-        context.sensor = floor_sensor_;
-        context.motors = motor_controller_;
-
-        BaseType_t result = xTaskCreate(
-            Vl53TestTask,
-            "vl53_test",
-            4096,
-            &context,
-            3,
-            nullptr);
-
-        if (result != pdPASS) {
-            ESP_LOGE("VL53_TEST", "Gagal membuat task sensor");
-        }
-    }
-
-    
-
-static void ListeningLedTask(void* arg) {
-    auto* context = static_cast<ListeningLedTaskContext*>(arg);
-
-    int pos = 0;
-    int direction = 1;
-    int previous_mode = -1;
-    uint8_t color_phase = 0;
-    bool pixels_lit = false;
-
-    auto color_wheel = [](uint8_t p,
-                          uint8_t& r, uint8_t& g, uint8_t& b) {
-        if (p < 85) {
-            r = 255 - p * 3;
-            g = p * 3;
-            b = 0;
-        } else if (p < 170) {
-            p -= 85;
-            r = 0;
-            g = 255 - p * 3;
-            b = p * 3;
-        } else {
-            p -= 170;
-            r = p * 3;
-            g = 0;
-            b = 255 - p * 3;
-        }
-    };
-
-    while (true) {
-        const DeviceState state =
-            Application::GetInstance().GetDeviceState();
-
-        int mode = 0;
-        if (state == kDeviceStateListening) {
-            mode = 1;
-        } else if (state == kDeviceStateSpeaking) {
-            mode = 2;
-        }
-
-        // LED biru onboard GPIO 8: aktif LOW.
-        // Listening = ON; speaking/idle = OFF.
-        gpio_set_level(GPIO_NUM_8, mode == 1 ? 0 : 1);
-
-        if (mode == 2 && previous_mode != 2) {
-            pos = 0;
-            direction = 1;
-        }
-
-        previous_mode = mode;
-
-        if (mode == 1) {
-            // LISTENING: delapan LED hijau stabil.
-            for (int i = 0; i < WS2812_LED_COUNT; i++) {
-                led_strip_set_pixel(
-                    context->strip, i, 0, 255, 0);
-            }
-
-            led_strip_refresh(context->strip);
-            pixels_lit = true;
-
-        } else if (mode == 2) {
-            // SPEAKING: scanner warna-warni kiri-kanan.
-            for (int i = 0; i < WS2812_LED_COUNT; i++) {
-                int distance = i > pos ? i - pos : pos - i;
-
-                uint8_t r, g, b;
-                color_wheel(
-                    static_cast<uint8_t>(color_phase + i * 32),
-                    r, g, b);
-
-                int brightness = 0;
-                if (distance == 0) {
-                    brightness = 255;
-                } else if (distance == 1) {
-                    brightness = 96;
-                } else if (distance == 2) {
-                    brightness = 24;
+        // Pengukuran hanya dilakukan ketika ada perintah gerak.
+        motor_controller_->SetMovementCheck(
+            [this](int, int) -> bool {
+                if (floor_sensor_ == nullptr) {
+                    ESP_LOGW("VL53_TEST", "Sensor belum tersedia");
+                    return true;
                 }
 
-                r = r * brightness / 255;
-                g = g * brightness / 255;
-                b = b * brightness / 255;
+                vl53l0x_data_t data = {};
 
-                led_strip_set_pixel(
-                    context->strip, i, r, g, b);
+                esp_err_t measure_err =
+                    vl53l0x_single_measure(floor_sensor_, &data);
+
+                // Jarak di atas 150 mm dianggap tepi meja.
+                // Pengukuran gagal atau data tidak valid juga
+                // diperlakukan sebagai kondisi berbahaya.
+                const bool edge_detected =
+                    measure_err != ESP_OK ||
+                    !data.valid ||
+                    data.distance_mm > 150;
+
+                if (measure_err == ESP_OK && data.valid) {
+                    ESP_LOGI(
+                        "VL53_TEST",
+                        "Jarak: %u mm | Status: %u | Tepi: %s",
+                        (unsigned)data.distance_mm,
+                        (unsigned)data.range_status,
+                        edge_detected ? "YA" : "tidak");
+                } else {
+                    ESP_LOGW(
+                        "VL53_TEST",
+                        "Pembacaan gagal: err=%s valid=%d "
+                        "jarak=%u status=%u",
+                        esp_err_to_name(measure_err),
+                        (int)data.valid,
+                        (unsigned)data.distance_mm,
+                        (unsigned)data.range_status);
+                }
+
+                return edge_detected;
+            });
+    }
+
+    static void ListeningLedTask(void* arg) {
+        auto* context = static_cast<ListeningLedTaskContext*>(arg);
+
+        int pos = 0;
+        int direction = 1;
+        int previous_mode = -1;
+        uint8_t color_phase = 0;
+        bool pixels_lit = false;
+
+        auto color_wheel = [](uint8_t p,
+                              uint8_t& r, uint8_t& g, uint8_t& b) {
+            if (p < 85) {
+                r = 255 - p * 3;
+                g = p * 3;
+                b = 0;
+            } else if (p < 170) {
+                p -= 85;
+                r = 0;
+                g = 255 - p * 3;
+                b = p * 3;
+            } else {
+                p -= 170;
+                r = p * 3;
+                g = 0;
+                b = 255 - p * 3;
+            }
+        };
+
+        while (true) {
+            const DeviceState state =
+                Application::GetInstance().GetDeviceState();
+
+            int mode = 0;
+            if (state == kDeviceStateListening) {
+                mode = 1;
+            } else if (state == kDeviceStateSpeaking) {
+                mode = 2;
             }
 
-            led_strip_refresh(context->strip);
-            pixels_lit = true;
+            // LED biru onboard GPIO 8: aktif LOW.
+            // Listening = ON; speaking/idle = OFF.
+            gpio_set_level(GPIO_NUM_8, mode == 1 ? 0 : 1);
 
-            pos += direction;
-
-            if (pos >= WS2812_LED_COUNT - 1) {
-                pos = WS2812_LED_COUNT - 1;
-                direction = -1;
-            } else if (pos <= 0) {
+            if (mode == 2 && previous_mode != 2) {
                 pos = 0;
                 direction = 1;
             }
 
-            color_phase += 13;
+            previous_mode = mode;
 
-        } else if (pixels_lit) {
-            // IDLE/STANDBY: RGB mati.
-            led_strip_clear(context->strip);
-            led_strip_refresh(context->strip);
-            pixels_lit = false;
+            if (mode == 1) {
+                // LISTENING: delapan LED hijau stabil.
+                for (int i = 0; i < WS2812_LED_COUNT; i++) {
+                    led_strip_set_pixel(
+                        context->strip, i, 0, 255, 0);
+                }
+
+                led_strip_refresh(context->strip);
+                pixels_lit = true;
+
+            } else if (mode == 2) {
+                // SPEAKING: scanner warna-warni kiri-kanan.
+                for (int i = 0; i < WS2812_LED_COUNT; i++) {
+                    int distance = i > pos ? i - pos : pos - i;
+
+                    uint8_t r, g, b;
+                    color_wheel(
+                        static_cast<uint8_t>(color_phase + i * 32),
+                        r, g, b);
+
+                    int brightness = 0;
+                    if (distance == 0) {
+                        brightness = 255;
+                    } else if (distance == 1) {
+                        brightness = 96;
+                    } else if (distance == 2) {
+                        brightness = 24;
+                    }
+
+                    r = r * brightness / 255;
+                    g = g * brightness / 255;
+                    b = b * brightness / 255;
+
+                    led_strip_set_pixel(
+                        context->strip, i, r, g, b);
+                }
+
+                led_strip_refresh(context->strip);
+                pixels_lit = true;
+
+                pos += direction;
+
+                if (pos >= WS2812_LED_COUNT - 1) {
+                    pos = WS2812_LED_COUNT - 1;
+                    direction = -1;
+                } else if (pos <= 0) {
+                    pos = 0;
+                    direction = 1;
+                }
+
+                color_phase += 13;
+
+            } else if (pixels_lit) {
+                // IDLE/STANDBY: RGB mati.
+                led_strip_clear(context->strip);
+                led_strip_refresh(context->strip);
+                pixels_lit = false;
+            }
+
+            vTaskDelay(pdMS_TO_TICKS(40));
+        }
+    }
+
+    void InitializeListeningLed() {
+        // LED biru onboard ESP32-C3 SuperMini di GPIO 8.
+        // Umumnya aktif LOW.
+        gpio_reset_pin(GPIO_NUM_8);
+        ESP_ERROR_CHECK(
+            gpio_set_direction(GPIO_NUM_8, GPIO_MODE_OUTPUT));
+        gpio_set_level(GPIO_NUM_8, 1);
+
+        led_strip_config_t strip_config = {};
+        strip_config.strip_gpio_num = WS2812_GPIO;
+        strip_config.max_leds = WS2812_LED_COUNT;
+        strip_config.led_model = LED_MODEL_WS2812;
+        strip_config.color_component_format =
+            LED_STRIP_COLOR_COMPONENT_FMT_GRB;
+        strip_config.flags.invert_out = false;
+
+        led_strip_rmt_config_t rmt_config = {};
+        rmt_config.clk_src = RMT_CLK_SRC_DEFAULT;
+        rmt_config.resolution_hz = 10 * 1000 * 1000;
+        rmt_config.mem_block_symbols = 64;
+        rmt_config.flags.with_dma = false;
+
+        esp_err_t err = led_strip_new_rmt_device(
+            &strip_config,
+            &rmt_config,
+            &listening_led_strip_);
+
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "WS2812 init gagal: %s",
+                     esp_err_to_name(err));
+            listening_led_strip_ = nullptr;
+            return;
         }
 
-        // Animasi tidak memakai delay panjang.
-        vTaskDelay(pdMS_TO_TICKS(40));
-    }
-}
-
-void InitializeListeningLed() {
-    
-    // LED biru onboard ESP32-C3 SuperMini di GPIO 8.
-    // Umumnya aktif LOW.
-    gpio_reset_pin(GPIO_NUM_8);
-    ESP_ERROR_CHECK(
-        gpio_set_direction(GPIO_NUM_8, GPIO_MODE_OUTPUT));
-    gpio_set_level(GPIO_NUM_8, 1);  // Mati saat boot.
-
-    led_strip_config_t strip_config = {};
-    strip_config.strip_gpio_num = WS2812_GPIO;
-    strip_config.max_leds = WS2812_LED_COUNT;
-    strip_config.led_model = LED_MODEL_WS2812;
-    strip_config.color_component_format =
-        LED_STRIP_COLOR_COMPONENT_FMT_GRB;
-    strip_config.flags.invert_out = false;
-
-    led_strip_rmt_config_t rmt_config = {};
-    rmt_config.clk_src = RMT_CLK_SRC_DEFAULT;
-    rmt_config.resolution_hz = 10 * 1000 * 1000;
-    rmt_config.mem_block_symbols = 64;
-    rmt_config.flags.with_dma = false;
-
-    esp_err_t err = led_strip_new_rmt_device(
-        &strip_config,
-        &rmt_config,
-        &listening_led_strip_);
-
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "WS2812 init gagal: %s",
-                 esp_err_to_name(err));
-        listening_led_strip_ = nullptr;
-        return;
-    }
-
-    led_strip_clear(listening_led_strip_);
-    led_strip_refresh(listening_led_strip_);
-
-    static ListeningLedTaskContext context;
-    context.strip = listening_led_strip_;
-
-    if (xTaskCreate(
-            ListeningLedTask,
-            "listening_led",
-            3072,
-            &context,
-            2,
-            nullptr) != pdPASS) {
-        ESP_LOGE(TAG, "Gagal membuat task indikator listening");
         led_strip_clear(listening_led_strip_);
         led_strip_refresh(listening_led_strip_);
-        return;
+
+        static ListeningLedTaskContext context;
+        context.strip = listening_led_strip_;
+
+        if (xTaskCreate(
+                ListeningLedTask,
+                "listening_led",
+                3072,
+                &context,
+                2,
+                nullptr) != pdPASS) {
+            ESP_LOGE(TAG, "Gagal membuat task indikator listening");
+            led_strip_clear(listening_led_strip_);
+            led_strip_refresh(listening_led_strip_);
+            return;
+        }
+
+        ESP_LOGI(TAG, "WS2812 listening aktif pada GPIO%d",
+                 WS2812_GPIO);
     }
-
-    ESP_LOGI(TAG, "WS2812 listening aktif pada GPIO%d",
-             WS2812_GPIO);
-}
-
 
     void InitializeDisplayI2c() {
         i2c_master_bus_config_t bus_config = {};
@@ -509,8 +481,6 @@ public:
         InitializeDisplay();
         InitializeButton();
 
-        // Motor dibuat lebih dahulu supaya task sensor memiliki
-        // objek MotorController yang valid.
         motor_controller_ = new MotorController(
             MOTOR_LEFT_IN1_PIN,
             MOTOR_LEFT_IN2_PIN,
