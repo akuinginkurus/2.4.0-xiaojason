@@ -1,9 +1,11 @@
+
 #include "motor_controller.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <string>
+#include <utility>
 
 #include <esp_log.h>
 
@@ -84,15 +86,15 @@ void MotorController::SetMovementCheck(
 
 bool MotorController::Drive(int left_speed, int right_speed,
                             uint32_t duration_ms) {
-    // Saat tepi terdeteksi, hanya gerakan mundur dengan kedua roda
-    // yang diperbolehkan. Maju dan belok diblokir.
+    // Sensor diperiksa hanya ketika ada perintah gerakan.
+    // Maju dan belok diblokir jika tepi meja terdeteksi.
 
     if ((left_speed != 0 || right_speed != 0) &&
-    movement_check_) {
-    SetEdgeDetected(
-        movement_check_(left_speed, right_speed));
+        movement_check_) {
+        SetEdgeDetected(
+            movement_check_(left_speed, right_speed));
     }
-    
+
     if (edge_detected_.load() &&
         (left_speed > 0 || right_speed > 0)) {
         ESP_LOGW(TAG, "Gerakan diblokir: tepi meja terdeteksi");
@@ -324,11 +326,6 @@ void MotorController::RegisterMcpTools() {
                 return "Invalid direction. Use forward, backward, left, or right.";
             }
 
-            if (IsEdgeDetected() &&
-                (left_speed > 0 || right_speed > 0)) {
-                return "Tepi meja terdeteksi. Maju/belok diblokir; mundur dahulu.";
-            }
-
             if (!Drive(left_speed, right_speed,
                        static_cast<uint32_t>(duration_ms))) {
                 return "Motor command queue is unavailable.";
@@ -385,11 +382,6 @@ void MotorController::RegisterMcpTools() {
                 motor == "left" ? signed_speed : 0;
             const int right_speed =
                 motor == "right" ? signed_speed : 0;
-
-            if (IsEdgeDetected() &&
-                (left_speed > 0 || right_speed > 0)) {
-                return "Tepi meja terdeteksi. Gerakan maju diblokir; mundur dahulu.";
-            }
 
             if (!Drive(left_speed, right_speed,
                        static_cast<uint32_t>(duration_ms))) {
