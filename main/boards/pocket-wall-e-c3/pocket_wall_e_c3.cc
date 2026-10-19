@@ -133,47 +133,47 @@ private:
         MotorController* motors;
     };
 
-    static void Vl53TestTask(void* arg) {
-        auto* context = static_cast<Vl53TaskContext*>(arg);
-        uint32_t log_counter = 0;
+    
+static void Vl53TestTask(void* arg) {
+    auto* context = static_cast<Vl53TaskContext*>(arg);
 
-        while (true) {
-    // Jangan membaca sensor selama robot tidak bergerak.
-    // Sensor baru aktif ketika motor benar-benar bergerak.
-    if (!context->motors->IsMoving()) {
-        vTaskDelay(pdMS_TO_TICKS(50));
-        continue;
-    }
-
-    vl53l0x_data_t data = {};
-
-    esp_err_t err =
-        vl53l0x_single_measure(context->sensor, &data);
-
-    const bool edge_detected =
-        err != ESP_OK ||
-        !data.valid ||
-        data.distance_mm > 150;
-
-    context->motors->SetEdgeDetected(edge_detected);
-
-    if (err == ESP_OK && data.valid) {
-        ESP_LOGI(
-            "VL53_TEST",
-            "Jarak: %u mm | Status: %u | Tepi: %s",
-            (unsigned)data.distance_mm,
-            (unsigned)data.range_status,
-            edge_detected ? "YA" : "tidak");
-    } else {
-        ESP_LOGW(
-            "VL53_TEST",
-            "Pembacaan gagal: err=%s valid=%d",
-            esp_err_to_name(err),
-            (int)data.valid);
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(50));
+    while (true) {
+        // Sensor tidak membaca selama motor diam.
+        if (!context->motors->IsMoving()) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
         }
+
+        vl53l0x_data_t data = {};
+
+        esp_err_t err =
+            vl53l0x_single_measure(context->sensor, &data);
+
+        const bool edge_detected =
+            err != ESP_OK ||
+            !data.valid ||
+            data.distance_mm > 150;
+
+        context->motors->SetEdgeDetected(edge_detected);
+
+        if (err == ESP_OK && data.valid) {
+            ESP_LOGI(
+                "VL53_TEST",
+                "Jarak: %u mm | Status: %u | Tepi: %s",
+                (unsigned)data.distance_mm,
+                (unsigned)data.range_status,
+                edge_detected ? "YA" : "tidak");
+        } else {
+            ESP_LOGW(
+                "VL53_TEST",
+                "Pembacaan gagal: err=%s valid=%d",
+                esp_err_to_name(err),
+                (int)data.valid);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
 
     void InitializeVl53Test() {
         ESP_LOGI("VL53_TEST", "Memulai sensor VL53L0X");
