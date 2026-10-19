@@ -17,6 +17,7 @@
 #include "settings.h"
 #include "lvgl_theme.h"
 #include "lvgl_display.h"
+#include "youtube_audio_poller.h"
 
 #define TAG "MCP"
 
@@ -31,6 +32,52 @@ McpServer::~McpServer() {
 }
 
 void McpServer::AddCommonTools() {
+
+        AddTool("self.audio.play_youtube",
+        "Play a YouTube song. Use when the user asks to play music or a song. "
+        "Get the YouTube video ID and title first.",
+        PropertyList({
+            Property("video_id", kPropertyTypeString),
+            Property("title", kPropertyTypeString)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            std::string video_id =
+                properties["video_id"].value<std::string>();
+            std::string title =
+                properties["title"].value<std::string>();
+
+            YouTubeAudioPoller::GetInstance().PlaySong(
+                video_id, title);
+            return true;
+        });
+
+    AddTool("self.audio.stop",
+        "Stop YouTube music playback immediately when the user asks to stop the music.",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            auto& yt = YouTubeAudioPoller::GetInstance();
+            if (yt.IsPlaying()) {
+                yt.Abort();
+                return true;
+            }
+            return false;
+        });
+
+    AddTool("self.audio.get_playback_status",
+        "Check whether YouTube music is playing and get its title.",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            auto& yt = YouTubeAudioPoller::GetInstance();
+            cJSON* json = cJSON_CreateObject();
+            cJSON_AddBoolToObject(
+                json, "is_playing", yt.IsPlaying());
+            cJSON_AddStringToObject(
+                json, "title", yt.GetCurrentTitle().c_str());
+            cJSON_AddStringToObject(
+                json, "video_id", yt.GetCurrentVideoId().c_str());
+            return json;
+        });
+    
     // *Important* To speed up the response time, we add the common tools to the beginning of
     // the tools list to utilize the prompt cache.
     // **重要** 为了提升响应速度，我们把常用的工具放在前面，利用 prompt cache 的特性。
