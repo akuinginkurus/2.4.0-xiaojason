@@ -149,6 +149,8 @@ private:
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
 
+    bool youtube_song_requested_ = false;
+    std::string youtube_song_query_;
 
     // Event handlers
     void HandleStateChangedEvent();
