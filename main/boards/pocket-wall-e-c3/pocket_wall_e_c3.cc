@@ -253,56 +253,130 @@ private:
     }
 
     
+
 static void ListeningLedTask(void* arg) {
     auto* context = static_cast<ListeningLedTaskContext*>(arg);
-    uint8_t hue = 0;
-    bool was_lit = false;
+
+    int pos = 0;
+    int direction = 1;
+    int previous_mode = -1;
+    uint8_t color_phase = 0;
+    bool pixels_lit = false;
+
+    auto color_wheel = [](uint8_t p,
+                          uint8_t& r, uint8_t& g, uint8_t& b) {
+        if (p < 85) {
+            r = 255 - p * 3;
+            g = p * 3;
+            b = 0;
+        } else if (p < 170) {
+            p -= 85;
+            r = 0;
+            g = 255 - p * 3;
+            b = p * 3;
+        } else {
+            p -= 170;
+            r = p * 3;
+            g = 0;
+            b = 255 - p * 3;
+        }
+    };
 
     while (true) {
-        const bool listening =
-            Application::GetInstance().GetDeviceState()
-            == kDeviceStateListening;
+        const DeviceState state =
+            Application::GetInstance().GetDeviceState();
 
-        if (listening) {
-            for (int i = 0; i < WS2812_LED_COUNT; ++i) {
-                uint8_t pos = static_cast<uint8_t>(
-                    hue + i * 256 / WS2812_LED_COUNT);
+        int mode = 0;
+        if (state == kDeviceStateListening) {
+            mode = 1;
+        } else if (state == kDeviceStateSpeaking) {
+            mode = 2;
+        }
 
-                uint8_t r, g, b;
+        // LED biru onboard GPIO 8: aktif LOW.
+        // Listening = ON; speaking/idle = OFF.
+        gpio_set_level(GPIO_NUM_8, mode == 1 ? 0 : 1);
 
-                if (pos < 85) {
-                    r = 255 - pos * 3;
-                    g = pos * 3;
-                    b = 0;
-                } else if (pos < 170) {
-                    uint8_t p = pos - 85;
-                    r = 0;
-                    g = 255 - p * 3;
-                    b = p * 3;
-                } else {
-                    uint8_t p = pos - 170;
-                    r = p * 3;
-                    g = 0;
-                    b = 255 - p * 3;
-                }
+        if (mode == 2 && previous_mode != 2) {
+            pos = 0;
+            direction = 1;
+        }
 
-                led_strip_set_pixel(context->strip, i, r, g, b);
+        previous_mode = mode;
+
+        if (mode == 1) {
+            // LISTENING: delapan LED hijau stabil.
+            for (int i = 0; i < WS2812_LED_COUNT; i++) {
+                led_strip_set_pixel(
+                    context->strip, i, 0, 255, 0);
             }
 
             led_strip_refresh(context->strip);
-            hue = static_cast<uint8_t>(hue + 4);
-            was_lit = true;
-        } else if (was_lit) {
+            pixels_lit = true;
+
+        } else if (mode == 2) {
+            // SPEAKING: scanner warna-warni kiri-kanan.
+            for (int i = 0; i < WS2812_LED_COUNT; i++) {
+                int distance = i > pos ? i - pos : pos - i;
+
+                uint8_t r, g, b;
+                color_wheel(
+                    static_cast<uint8_t>(color_phase + i * 32),
+                    r, g, b);
+
+                int brightness = 0;
+                if (distance == 0) {
+                    brightness = 255;
+                } else if (distance == 1) {
+                    brightness = 96;
+                } else if (distance == 2) {
+                    brightness = 24;
+                }
+
+                r = r * brightness / 255;
+                g = g * brightness / 255;
+                b = b * brightness / 255;
+
+                led_strip_set_pixel(
+                    context->strip, i, r, g, b);
+            }
+
+            led_strip_refresh(context->strip);
+            pixels_lit = true;
+
+            pos += direction;
+
+            if (pos >= WS2812_LED_COUNT - 1) {
+                pos = WS2812_LED_COUNT - 1;
+                direction = -1;
+            } else if (pos <= 0) {
+                pos = 0;
+                direction = 1;
+            }
+
+            color_phase += 13;
+
+        } else if (pixels_lit) {
+            // IDLE/STANDBY: RGB mati.
             led_strip_clear(context->strip);
             led_strip_refresh(context->strip);
-            was_lit = false;
+            pixels_lit = false;
         }
 
+        // Animasi tidak memakai delay panjang.
         vTaskDelay(pdMS_TO_TICKS(40));
     }
 }
 
 void InitializeListeningLed() {
+    
+    // LED biru onboard ESP32-C3 SuperMini di GPIO 8.
+    // Umumnya aktif LOW.
+    gpio_reset_pin(GPIO_NUM_8);
+    ESP_ERROR_CHECK(
+        gpio_set_direction(GPIO_NUM_8, GPIO_MODE_OUTPUT));
+    gpio_set_level(GPIO_NUM_8, 1);  // Mati saat boot.
+
     led_strip_config_t strip_config = {};
     strip_config.strip_gpio_num = WS2812_GPIO;
     strip_config.max_leds = WS2812_LED_COUNT;
