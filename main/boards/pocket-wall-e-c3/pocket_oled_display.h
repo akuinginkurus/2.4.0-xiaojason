@@ -19,15 +19,16 @@ public:
 
 private:
     enum class FaceMode {
-        kNeutral,
-        kListening,
-        kThinking,
-        kSpeaking,
-        kHappy,
-        kSad,
-        kAngry,
-        kSleepy,
-    };
+    kNeutral,
+    kListening,
+    kThinking,
+    kSpeaking,
+    kHappy,
+    kSad,
+    kAngry,
+    kSleepy,
+    kSleeping,
+};
 
     lv_obj_t* face_layer_ = nullptr;
     lv_obj_t* left_eye_ = nullptr;
