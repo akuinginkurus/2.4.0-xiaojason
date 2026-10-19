@@ -77,6 +77,11 @@ void MotorController::ConfigurePwm() {
     }
 }
 
+void MotorController::SetMovementCheck(
+    std::function<bool(int, int)> check) {
+    movement_check_ = std::move(check);
+}
+
 bool MotorController::Drive(int left_speed, int right_speed,
                             uint32_t duration_ms) {
     // Saat tepi terdeteksi, hanya gerakan mundur dengan kedua roda
