@@ -394,7 +394,6 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     }
     is_playing_ = true;
     abort_requested_ = false;
-    app.ResetAborted();
 
     ESP_LOGI(TAG, ">> DETEKSI: Mulai memutar lagu YouTube: \"%s\" (vid=%s) <<", title.c_str(), video_id.c_str());
     app.GetAudioService().EnableWakeWordDetection(false);
