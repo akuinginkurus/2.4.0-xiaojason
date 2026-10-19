@@ -327,10 +327,14 @@ void MotorController::RegisterMcpTools() {
             }
 
             if (!Drive(left_speed, right_speed,
-                       static_cast<uint32_t>(duration_ms))) {
-                return "Motor command queue is unavailable.";
-            }
-
+           static_cast<uint32_t>(duration_ms))) {
+                
+    if (IsEdgeDetected()) {
+        return "Sudah di tepi meja, saya takut jatuh.";
+    }
+    return "Motor tidak tersedia, coba lagi nanti.";
+}
+            
             const int applied_speed =
                 speed == 0 ? 0 :
                 std::max(speed, static_cast<int>(MOTOR_MIN_DUTY_PERCENT));
