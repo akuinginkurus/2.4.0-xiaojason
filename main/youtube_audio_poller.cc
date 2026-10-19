@@ -78,14 +78,43 @@ void YouTubeAudioPoller::Start() {
     if (running_.load()) {
         return;
     }
-    running_ = true;
+
     abort_requested_ = false;
 
-    xTaskCreate([](void* arg) {
-        static_cast<YouTubeAudioPoller*>(arg)->TaskLoop();
-        vTaskDelete(NULL);
-    }, "yt_poller", 3584, this, 2, &task_handle_);
-    ESP_LOGI(TAG, "YouTubeAudioPoller started");
+    BaseType_t result = xTaskCreate(
+        [](void* arg) {
+            auto* player =
+                static_cast<YouTubeAudioPoller*>(arg);
+
+            player->TaskLoop();
+
+            player->task_handle_ = nullptr;
+            player->running_ = false;
+
+            vTaskDelete(nullptr);
+        },
+        "yt_poller",
+        3584,
+        this,
+        2,
+        &task_handle_);
+
+    if (result != pdPASS) {
+        task_handle_ = nullptr;
+        running_ = false;
+
+        ESP_LOGE(
+            TAG,
+            "Gagal membuat task YouTube: memori task tidak cukup");
+
+        return;
+    }
+
+    running_ = true;
+
+    ESP_LOGI(
+        TAG,
+        "YouTubeAudioPoller started; stack=3584 bytes");
 }
 
 void YouTubeAudioPoller::Stop() {
