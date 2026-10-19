@@ -20,6 +20,7 @@ public:
     void Stop();
 
     // Pengaman tepi meja
+    void SetMovementCheck(std::function<bool(int, int)> check);
     void SetEdgeDetected(bool detected);
     bool IsEdgeDetected() const;
 
@@ -46,6 +47,7 @@ private:
     QueueHandle_t command_queue_ = nullptr;
     TaskHandle_t task_handle_ = nullptr;
 
+    std::function<bool(int, int)> movement_check_;
     std::atomic<bool> moving_{false};
     std::atomic<bool> edge_detected_{true};
     std::atomic<int> left_speed_{0};
