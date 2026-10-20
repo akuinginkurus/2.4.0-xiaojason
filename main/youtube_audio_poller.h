@@ -31,7 +31,7 @@ public:
 
 private:
     YouTubeAudioPoller();
-    ~YouTubeAudioPoller();
+    \~YouTubeAudioPoller();
 
     void TaskLoop();
     bool FetchDirect(const std::string& query, std::string& video_id, std::string& title);
@@ -59,4 +59,4 @@ private:
     Http* active_http_ = nullptr;
 };
 
-#endif // YOUTUBE_AUDIO_POLLER_H_
+#endif  // YOUTUBE_AUDIO_POLLER_H_
