@@ -62,6 +62,42 @@ void McpServer::AddCommonTools() {
             codec->SetOutputVolume(properties["volume"].value<int>());
             return true;
         });
+
+    AddTool("self.audio.play_youtube",
+        "Play a YouTube song on the device speaker. Provide video_id and optional title.",
+        PropertyList({
+            Property("video_id", kPropertyTypeString),
+            Property("title", kPropertyTypeString, "YouTube Song")
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            std::string video_id = properties["video_id"].value<std::string>();
+            std::string title = properties["title"].value<std::string>();
+            YouTubeAudioPoller::GetInstance().PlaySong(video_id, title);
+            return true;
+        });
+
+    AddTool("self.audio.get_playback_status",
+        "Get current YouTube playback status: is_playing, title, video_id.",
+        PropertyList(),
+        [](const PropertyList&) -> ReturnValue {
+            auto& yt = YouTubeAudioPoller::GetInstance();
+            cJSON* json = cJSON_CreateObject();
+            cJSON_AddBoolToObject(json, "is_playing", yt.IsPlaying());
+            cJSON_AddStringToObject(json, "title", yt.GetCurrentTitle().c_str());
+            cJSON_AddStringToObject(json, "video_id", yt.GetCurrentVideoId().c_str());
+            return json;
+        });
+
+    AddTool("self.audio.stop",
+        "Stop currently playing YouTube audio.",
+        PropertyList(),
+        [](const PropertyList&) -> ReturnValue {
+            if (YouTubeAudioPoller::GetInstance().IsPlaying()) {
+                YouTubeAudioPoller::GetInstance().Abort();
+                return true;
+            }
+            return false;
+        });
     
     auto backlight = board.GetBacklight();
     if (backlight) {
