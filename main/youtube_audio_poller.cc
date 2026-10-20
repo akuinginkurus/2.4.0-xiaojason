@@ -816,10 +816,9 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
 
 void YouTubeAudioPoller::TaskLoop() {
     ESP_LOGI(TAG, "YouTube player ready");
-
     while (running_.load()) {
-        while (running_.load() && !play_requested_.load() && !query_requested_.load() &&
-               !trigger_requested_.load()) {
+        while (running_.load() && !play_requested_.load() &&
+               !query_requested_.load() && !trigger_requested_.load()) {
             vTaskDelay(pdMS_TO_TICKS(100));
         }
         if (!running_.load()) {
@@ -827,7 +826,8 @@ void YouTubeAudioPoller::TaskLoop() {
         }
 
         if (play_requested_.exchange(false)) {
-            std::string vid, tit;
+            std::string vid;
+            std::string tit;
             {
                 std::lock_guard<std::mutex> lock(song_mutex_);
                 vid = pending_video_id_;
@@ -845,5 +845,38 @@ void YouTubeAudioPoller::TaskLoop() {
             if (!q.empty()) {
                 is_fetching_ = true;
                 auto& app = Application::GetInstance();
-                bool was_ww = app.GetAudioService().IsWakeWordRunning();
-                if (was
+                bool wake = app.GetAudioService().IsWakeWordRunning();
+                if (wake) {
+                    app.GetAudioService().EnableWakeWordDetection(false);
+                }
+                std::string vid;
+                std::string tit;
+                bool found = FetchDirect(q, vid, tit);
+                is_fetching_ = false;
+                if (found) {
+                    StreamAudio(vid, tit);
+                } else if (wake && app.GetDeviceState() == kDeviceStateIdle) {
+                    app.GetAudioService().EnableWakeWordDetection(true);
+                }
+            }
+        } else if (trigger_requested_.exchange(false)) {
+            is_fetching_ = true;
+            auto& app = Application::GetInstance();
+            bool wake = app.GetAudioService().IsWakeWordRunning();
+            if (wake) {
+                app.GetAudioService().EnableWakeWordDetection(false);
+            }
+            int cmd_id = 0;
+            std::string video_id;
+            std::string title;
+            bool found = FetchCommands(cmd_id, video_id, title);
+            is_fetching_ = false;
+            if (found) {
+                AckCommand(cmd_id);
+                StreamAudio(video_id, title);
+            } else if (wake && app.GetDeviceState() == kDeviceStateIdle) {
+                app.GetAudioService().EnableWakeWordDetection(true);
+            }
+        }
+    }
+}
