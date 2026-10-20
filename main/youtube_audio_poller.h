@@ -31,7 +31,9 @@ public:
 
 private:
     YouTubeAudioPoller();
-    \~YouTubeAudioPoller();
+#define YT_DTOR \~
+    YT_DTOR YouTubeAudioPoller();
+#undef YT_DTOR
 
     void TaskLoop();
     bool FetchDirect(const std::string& query, std::string& video_id, std::string& title);
