@@ -63,10 +63,6 @@ std::string YouTubeAudioPoller::GetCurrentVideoId() const {
 
 YouTubeAudioPoller::YouTubeAudioPoller() {}
 
-YouTubeAudioPoller::\~YouTubeAudioPoller() {
-    Stop();
-}
-
 YouTubeAudioPoller& YouTubeAudioPoller::GetInstance() {
     static YouTubeAudioPoller instance;
     return instance;
@@ -187,8 +183,7 @@ bool YouTubeAudioPoller::FetchDirect(const std::string& query, std::string& vide
 
     std::string encoded_q;
     for (char c : query) {
-        if (isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_' || c == '.' ||
-            c == '\~') {
+        if (isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_' || c == '.') {
             encoded_q += c;
         } else if (c == ' ') {
             encoded_q += "%20";
@@ -398,7 +393,6 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     ESP_LOGI(TAG, "Start YouTube: \"%s\" (vid=%s)", title.c_str(), video_id.c_str());
     app.GetAudioService().EnableWakeWordDetection(false);
 
-    // Tunggu TTS selesai
     {
         int wait_ms = 0;
         while (app.GetDeviceState() == kDeviceStateSpeaking && wait_ms < 8000 &&
@@ -852,35 +846,4 @@ void YouTubeAudioPoller::TaskLoop() {
                 is_fetching_ = true;
                 auto& app = Application::GetInstance();
                 bool was_ww = app.GetAudioService().IsWakeWordRunning();
-                if (was_ww) {
-                    app.GetAudioService().EnableWakeWordDetection(false);
-                }
-                std::string vid, tit;
-                bool found = FetchDirect(q, vid, tit);
-                is_fetching_ = false;
-                if (found) {
-                    StreamAudio(vid, tit);
-                } else if (was_ww && app.GetDeviceState() == kDeviceStateIdle) {
-                    app.GetAudioService().EnableWakeWordDetection(true);
-                }
-            }
-        } else if (trigger_requested_.exchange(false)) {
-            is_fetching_ = true;
-            auto& app = Application::GetInstance();
-            bool was_ww = app.GetAudioService().IsWakeWordRunning();
-            if (was_ww) {
-                app.GetAudioService().EnableWakeWordDetection(false);
-            }
-            int cmd_id = 0;
-            std::string video_id, title;
-            bool found = FetchCommands(cmd_id, video_id, title);
-            is_fetching_ = false;
-            if (found) {
-                AckCommand(cmd_id);
-                StreamAudio(video_id, title);
-            } else if (was_ww && app.GetDeviceState() == kDeviceStateIdle) {
-                app.GetAudioService().EnableWakeWordDetection(true);
-            }
-        }
-    }
-}
+                if (was
