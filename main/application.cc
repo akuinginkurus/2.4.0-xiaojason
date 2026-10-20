@@ -10,7 +10,7 @@
 #include "system_info.h"
 #include "text_glyph_payload.h"
 #include "websocket_protocol.h"
-
+#include "youtube_audio_poller.h"
 #include <driver/gpio.h>
 #include <esp_log.h>
 #include <arpa/inet.h>
@@ -18,6 +18,45 @@
 #include <cstring>
 
 #define TAG "Application"
+
+static std::string ToLowerCopy(const std::string& s) {
+    std::string out = s;
+    for (char& c : out) {
+        c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    }
+    return out;
+}
+
+// Ambil judul lagu dari ucapan seperti "putar lagu numb di youtube"
+static std::string ExtractYouTubeQuery(const std::string& message) {
+    std::string lower = ToLowerCopy(message);
+    if (lower.find("youtube") == std::string::npos) {
+        return "";
+    }
+
+    const char* junk[] = {
+        "di youtube", "dari youtube", "youtube",
+        "putar lagu", "putar", "mainkan",
+        "play song", "play", "tolong", "dong", "ya"
+    };
+    std::string q = lower;
+    for (const char* j : junk) {
+        size_t pos;
+        while ((pos = q.find(j)) != std::string::npos) {
+            q.erase(pos, strlen(j));
+        }
+    }
+    while (!q.empty() && isspace(static_cast<unsigned char>(q.front()))) {
+        q.erase(0, 1);
+    }
+    while (!q.empty() && isspace(static_cast<unsigned char>(q.back()))) {
+        q.pop_back();
+    }
+    while (!q.empty() && (q.back() == '.' || q.back() == '?' || q.back() == '!')) {
+        q.pop_back();
+    }
+    return q;
+}
 
 Application::Application() {
     event_group_ = xEventGroupCreate();
@@ -331,6 +370,9 @@ void Application::HandleActivationDoneEvent() {
     auto& board = Board::GetInstance();
     board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
 
+    // Start YouTube audio poller (server Franklnir)
+    YouTubeAudioPoller::GetInstance().Start();
+
     Schedule([this]() {
         // Play the success sound to indicate the device is ready
         audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
@@ -532,11 +574,15 @@ void Application::InitializeProtocol() {
     });
 
     protocol_->OnAudioChannelClosed([this, &board]() {
-        board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+        if (!YouTubeAudioPoller::GetInstance().IsPlaying()) {
+            board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+        }
         Schedule([this]() {
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
-            SetDeviceState(kDeviceStateIdle);
+            if (!YouTubeAudioPoller::GetInstance().IsPlaying()) {
+                SetDeviceState(kDeviceStateIdle);
+            }
         });
     });
 
@@ -559,6 +605,20 @@ void Application::InitializeProtocol() {
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
+                    // Setelah TTS selesai: jika user minta lagu YouTube, mulai play
+                    if (youtube_song_requested_) {
+                        std::string q = std::move(youtube_song_query_);
+                        youtube_song_query_.clear();
+                        youtube_song_requested_ = false;
+                        if (protocol_ && protocol_->IsAudioChannelOpened()) {
+                            protocol_->CloseAudioChannel();
+                        }
+                        if (!q.empty()) {
+                            YouTubeAudioPoller::GetInstance().PlayQuery(q);
+                        }
+                        SetDeviceState(kDeviceStateIdle);
+                        return;
+                    }
                     if (GetDeviceState() == kDeviceStateSpeaking) {
                         if (listening_mode_ == kListeningModeManualStop) {
                             SetDeviceState(kDeviceStateIdle);
@@ -592,10 +652,18 @@ void Application::InitializeProtocol() {
                     glyphs.clear();
                 }
                 ESP_LOGI(TAG, ">> %s", text->valuestring);
-                Schedule([display, message = std::string(text->valuestring),
+                Schedule([this, display, message = std::string(text->valuestring),
                           glyphs = std::move(glyphs), bpp]() {
                     display->AddTextGlyphs(glyphs, bpp);
                     display->SetChatMessage("user", message.c_str());
+
+                    // Deteksi "putar ... youtube"
+                    std::string q = ExtractYouTubeQuery(message);
+                    if (!q.empty()) {
+                        youtube_song_requested_ = true;
+                        youtube_song_query_ = q;
+                        ESP_LOGI(TAG, "YouTube query dari STT: \"%s\"", q.c_str());
+                    }
                 });
             }
         } else if (strcmp(type->valuestring, "llm") == 0) {
@@ -628,9 +696,18 @@ void Application::InitializeProtocol() {
             if (cJSON_IsString(status) && cJSON_IsString(message) && cJSON_IsString(emotion)) {
                 Alert(status->valuestring, message->valuestring, emotion->valuestring,
                       Lang::Sounds::OGG_VIBRATION);
-            } else {
-                ESP_LOGW(TAG, "Alert command requires status, message and emotion");
+            } else if (strcmp(type->valuestring, "play_audio") == 0) {
+            auto vid_item = cJSON_GetObjectItem(root, "video_id");
+            auto title_item = cJSON_GetObjectItem(root, "title");
+            if (cJSON_IsString(vid_item)) {
+                std::string vid = vid_item->valuestring;
+                std::string tit =
+                    cJSON_IsString(title_item) ? title_item->valuestring : "YouTube Song";
+                YouTubeAudioPoller::GetInstance().PlaySong(vid, tit);
             }
+        } else {
+            ESP_LOGW(TAG, "Unknown message type: %s", type->valuestring);
+        }
 #if CONFIG_RECEIVE_CUSTOM_MESSAGE
         } else if (strcmp(type->valuestring, "custom") == 0) {
             auto payload = cJSON_GetObjectItem(root, "payload");
@@ -704,27 +781,20 @@ void Application::StartListening() { xEventGroupSetBits(event_group_, MAIN_EVENT
 void Application::StopListening() { xEventGroupSetBits(event_group_, MAIN_EVENT_STOP_LISTENING); }
 
 void Application::HandleToggleChatEvent() {
+    // Tekan tombol saat lagu YouTube = stop
+    if (YouTubeAudioPoller::GetInstance().IsPlaying()) {
+        ESP_LOGI(TAG, "Stop YouTube via button");
+        YouTubeAudioPoller::GetInstance().Abort();
+        auto display = Board::GetInstance().GetDisplay();
+        if (display) {
+            display->ShowNotification("Lagu dihentikan");
+        }
+        return;
+    }
+
     auto state = GetDeviceState();
 
     if (state == kDeviceStateActivating) {
-        SetDeviceState(kDeviceStateIdle);
-        return;
-    } else if (state == kDeviceStateWifiConfiguring) {
-        audio_service_.EnableAudioTesting(true);
-        SetDeviceState(kDeviceStateAudioTesting);
-        return;
-    } else if (state == kDeviceStateAudioTesting) {
-        audio_service_.EnableAudioTesting(false);
-        SetDeviceState(kDeviceStateWifiConfiguring);
-        return;
-    }
-
-    if (!protocol_) {
-        ESP_LOGE(TAG, "Protocol not initialized");
-        return;
-    }
-
-    if (state == kDeviceStateIdle) {
         ListeningMode mode = GetDefaultListeningMode();
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
@@ -810,6 +880,11 @@ void Application::HandleStopListeningEvent() {
 
 void Application::HandleWakeWordDetectedEvent() {
     if (!protocol_) {
+        return;
+    }
+
+    if (YouTubeAudioPoller::GetInstance().IsPlaying()) {
+        ESP_LOGW(TAG, "Wake word ignored: YouTube playing");
         return;
     }
 
@@ -918,11 +993,18 @@ void Application::HandleStateChangedEvent() {
     switch (new_state) {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
-            display->SetStatus(Lang::Strings::STANDBY);
-            display->ClearChatMessages();    // Clear messages first
-            display->SetEmotion("neutral");  // Then set emotion (wechat mode checks child count)
-            audio_service_.EnableVoiceProcessing(false);
-            audio_service_.EnableWakeWordDetection(true);
+            if (YouTubeAudioPoller::GetInstance().IsPlaying() || youtube_song_requested_) {
+                display->SetStatus("Memutar Lagu");
+                display->SetEmotion("happy");
+                audio_service_.EnableVoiceProcessing(false);
+                audio_service_.EnableWakeWordDetection(false);
+            } else {
+                display->SetStatus(Lang::Strings::STANDBY);
+                display->ClearChatMessages();
+                display->SetEmotion("neutral");
+                audio_service_.EnableVoiceProcessing(false);
+                audio_service_.EnableWakeWordDetection(true);
+            }
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
@@ -1118,6 +1200,10 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
 }
 
 bool Application::CanEnterSleepMode() {
+    if (YouTubeAudioPoller::GetInstance().IsPlaying()) {
+        return false;
+    }
+
     if (GetDeviceState() != kDeviceStateIdle) {
         return false;
     }
