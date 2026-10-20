@@ -108,6 +108,9 @@ void YouTubeAudioPoller::Abort() {
 }
 
 void YouTubeAudioPoller::TriggerFetch() {
+    if (!running_.load()) {
+        Start();
+    }
     ESP_LOGI(TAG, "Fetch triggered externally");
     trigger_requested_ = true;
     Application::GetInstance().GetAudioService().EnableWakeWordDetection(false);
@@ -116,6 +119,9 @@ void YouTubeAudioPoller::TriggerFetch() {
 void YouTubeAudioPoller::PlaySong(const std::string& video_id, const std::string& title) {
     if (video_id.empty()) {
         return;
+    }
+    if (!running_.load()) {
+        Start();
     }
     ESP_LOGI(TAG, "PlaySong: title=\"%s\", vid=%s", title.c_str(), video_id.c_str());
     {
@@ -130,6 +136,9 @@ void YouTubeAudioPoller::PlaySong(const std::string& video_id, const std::string
 void YouTubeAudioPoller::PlayQuery(const std::string& query) {
     if (query.empty()) {
         return;
+    }
+    if (!running_.load()) {
+        Start();
     }
     if (is_playing_.load() || play_requested_.load()) {
         ESP_LOGW(TAG, "PlayQuery ignored (already playing): \"%s\"", query.c_str());
