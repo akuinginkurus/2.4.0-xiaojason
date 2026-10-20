@@ -80,7 +80,7 @@ void YouTubeAudioPoller::Start() {
             static_cast<YouTubeAudioPoller*>(arg)->TaskLoop();
             vTaskDelete(NULL);
         },
-        "yt_poller", 3584, this, 2, &task_handle_);
+        "yt_poller", 10240, this, 2, &task_handle_);
     ESP_LOGI(TAG, "YouTubeAudioPoller started (server=%s)", GetServerDomain().c_str());
 }
 
@@ -459,19 +459,12 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     }
     size_t free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 
-    std::string current_bitrate = "12k";
-    if (rssi >= -68 && free_sram >= 36000) {
-        current_bitrate = "16k";
-    } else if (rssi >= -78 && free_sram >= 28000) {
-        current_bitrate = "12k";
-    } else {
-        current_bitrate = "8k";
-    }
+    std::string current_bitrate = "8k";
     ESP_LOGI(TAG, "Adaptive bitrate: RSSI=%d free=%u -> %s", rssi, (unsigned)free_sram,
              current_bitrate.c_str());
 
     static const uint8_t OGGS_MAGIC[4] = {'O', 'g', 'g', 'S'};
-    static const size_t kOggBufCap = 2048;
+    static const size_t kOggBufCap = 1024;
     auto ogg_buf = std::make_unique<uint8_t[]>(kOggBufCap);
 
     size_t total_bytes_streamed = 0;
@@ -557,7 +550,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
         size_t session_bytes = 0;
         int session_frames = 0;
 
-        size_t prebuffer_target = (live_rssi >= -75 && frames_pushed == 0) ? 4 : 6;
+        size_t prebuffer_target = 2;
         std::vector<std::unique_ptr<AudioStreamPacket>> prebuffer;
         bool is_prebuffering = true;
 
