@@ -20,7 +20,9 @@ extern "C" {
 #ifdef SH1106
 #include <esp_lcd_panel_sh1106.h>
 #endif
-
+#include <driver/uart.h>
+#include <string>
+#include "mcp_server.h"
 #include <esp_log.h>
 #include <led_strip.h>
 #include <led_strip_rmt.h>
@@ -131,6 +133,137 @@ private:
     struct ListeningLedTaskContext {
         led_strip_handle_t strip;
     };
+
+
+    // DFPlayer Mini: UART1, TX GPIO0, RX GPIO1
+    bool dfplayer_initialized_ = false;
+
+    void SendDfPlayerCommand(uint8_t command, uint16_t parameter) {
+        if (!dfplayer_initialized_) {
+            ESP_LOGW(TAG, "DFPlayer belum siap");
+            return;
+        }
+
+        uint8_t high = (parameter >> 8) & 0xFF;
+        uint8_t low = parameter & 0xFF;
+
+        uint16_t sum = 0xFF + 0x06 + command + 0x00 + high + low;
+        uint16_t checksum = static_cast<uint16_t>(0U - sum);
+
+        const uint8_t frame[10] = {
+            0x7E, 0xFF, 0x06, command, 0x00,
+            high, low,
+            static_cast<uint8_t>(checksum >> 8),
+            static_cast<uint8_t>(checksum & 0xFF),
+            0xEF
+        };
+
+        int written = uart_write_bytes(
+            UART_NUM_1,
+            reinterpret_cast<const char*>(frame),
+            sizeof(frame));
+
+        if (written != sizeof(frame)) {
+            ESP_LOGE(TAG, "Gagal mengirim perintah DFPlayer");
+        }
+    }
+
+    void InitializeDfPlayer() {
+        uart_config_t config = {};
+        config.baud_rate = 9600;
+        config.data_bits = UART_DATA_8_BITS;
+        config.parity = UART_PARITY_DISABLE;
+        config.stop_bits = UART_STOP_BITS_1;
+        config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
+
+        esp_err_t err = uart_driver_install(
+            UART_NUM_1, 256, 0, 0, nullptr, 0);
+
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "UART install gagal: %s",
+                     esp_err_to_name(err));
+            return;
+        }
+
+        err = uart_param_config(UART_NUM_1, &config);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "UART config gagal: %s",
+                     esp_err_to_name(err));
+            uart_driver_delete(UART_NUM_1);
+            return;
+        }
+
+        // ESP-IDF 5.x: TX=GPIO0, RX=GPIO1
+        err = uart_set_pin(
+            UART_NUM_1, GPIO_NUM_0, GPIO_NUM_1,
+            UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "UART pin gagal: %s",
+                     esp_err_to_name(err));
+            uart_driver_delete(UART_NUM_1);
+            return;
+        }
+
+        dfplayer_initialized_ = true;
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+
+        // Atur volume 20/30
+        SendDfPlayerCommand(0x06, 20);
+
+        ESP_LOGI(TAG, "DFPlayer siap: TX=GPIO0 RX=GPIO1");
+    }
+
+    void RegisterDfPlayerTools() {
+        auto& server = McpServer::GetInstance();
+
+        server.AddTool(
+            "self.wall_e.play_sd_track",
+            "Play an MP3 track from DFPlayer Mini microSD. "
+            "Track number 1-255, volume 0-30.",
+            PropertyList({
+                Property("track", kPropertyTypeInteger, 1, 1, 255),
+                Property("volume", kPropertyTypeInteger, 20, 0, 30),
+            }),
+            [this](const PropertyList& properties) -> ReturnValue {
+                int track = properties["track"].value<int>();
+                int volume = properties["volume"].value<int>();
+
+                if (!dfplayer_initialized_) {
+                    return ReturnValue("DFPlayer belum siap");
+                }
+
+                SendDfPlayerCommand(
+                    0x06, static_cast<uint16_t>(volume));
+
+                vTaskDelay(pdMS_TO_TICKS(100));
+
+                // Perintah memainkan nomor track
+                SendDfPlayerCommand(
+                    0x03, static_cast<uint16_t>(track));
+
+                ESP_LOGI(TAG, "Putar track %d volume %d",
+                         track, volume);
+
+                return ReturnValue("Perintah putar lagu dikirim");
+            });
+
+        server.AddTool(
+            "self.wall_e.stop_sd_music",
+            "Stop DFPlayer Mini music.",
+            PropertyList(),
+            [this](const PropertyList&) -> ReturnValue {
+                if (!dfplayer_initialized_) {
+                    return ReturnValue("DFPlayer belum siap");
+                }
+
+                SendDfPlayerCommand(0x16, 0);
+
+                return ReturnValue("Perintah berhenti dikirim");
+            });
+    }
+
 
     // Fungsi ini hanya dipanggil dari callback perintah gerak.
     // Tidak ada inisialisasi, kalibrasi, atau pembacaan jarak
