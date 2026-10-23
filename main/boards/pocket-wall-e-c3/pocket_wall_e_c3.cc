@@ -623,6 +623,9 @@ public:
 
         InitializeListeningLed();
 
+        InitializeDfPlayer();
+        RegisterDfPlayerTools();
+
         ESP_LOGI(TAG, "Pocket Wall-E C3 initialized");
     }
 
