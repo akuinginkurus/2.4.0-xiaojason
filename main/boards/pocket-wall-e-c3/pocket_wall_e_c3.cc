@@ -349,10 +349,10 @@ private:
     }
 
     void InitializeListeningLed() {
-        gpio_reset_pin(GPIO_NUM_8);
+        gpio_reset_pin(GPIO_NUM_12);
         ESP_ERROR_CHECK(
-            gpio_set_direction(GPIO_NUM_8, GPIO_MODE_OUTPUT));
-        gpio_set_level(GPIO_NUM_8, 1);
+            gpio_set_direction(GPIO_NUM_12, GPIO_MODE_OUTPUT));
+        gpio_set_level(GPIO_NUM_12, 1);
 
         led_strip_config_t strip_config = {};
         strip_config.strip_gpio_num = WS2812_GPIO;
