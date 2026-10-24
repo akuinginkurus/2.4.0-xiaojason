@@ -77,6 +77,7 @@ void McpServer::AddCommonTools() {
             cJSON* res = cJSON_CreateObject();
             if (found) {
                 cJSON_AddBoolToObject(res, "found", true);
+                Application::GetInstance().SetSongConfirmationPending();
                 cJSON_AddStringToObject(res, "video_id", vid.c_str());
                 cJSON_AddStringToObject(res, "title", tit.c_str());
                 cJSON_AddStringToObject(res, "duration", dur.c_str());
