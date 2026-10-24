@@ -100,7 +100,7 @@ void McpServer::AddCommonTools() {
         [](const PropertyList& properties) -> ReturnValue {
             std::string video_id = properties["video_id"].value<std::string>();
             std::string title = properties["title"].value<std::string>();
-            std::string duration = properties.has("duration") ? properties["duration"].value<std::string>() : "";
+            std::string duration = properties["duration"].value<std::string>();
             
             auto& app = Application::GetInstance();
             if (app.IsSongConfirmationPending()) {
