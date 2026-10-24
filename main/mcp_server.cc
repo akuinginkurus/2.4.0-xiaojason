@@ -62,6 +62,101 @@ void McpServer::AddCommonTools() {
             codec->SetOutputVolume(properties["volume"].value<int>());
             return true;
         });
+
+    AddTool("self.audio.search_youtube",
+        "Cari lagu di YouTube untuk mendapatkan video_id, judul, dan durasi sebelum konfirmasi.",
+        PropertyList({
+            Property("query", kPropertyTypeString)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            std::string query = properties["query"].value<std::string>();
+            ESP_LOGI(TAG, "Tool Call: self.audio.search_youtube: query=\"%s\"", query.c_str());
+            std::string vid, tit, dur;
+            bool found = YouTubeAudioPoller::GetInstance().SearchSong(query, vid, tit, dur);
+            
+            cJSON* res = cJSON_CreateObject();
+            if (found) {
+                cJSON_AddBoolToObject(res, "found", true);
+                cJSON_AddStringToObject(res, "video_id", vid.c_str());
+                cJSON_AddStringToObject(res, "title", tit.c_str());
+                cJSON_AddStringToObject(res, "duration", dur.c_str());
+                std::string instruction = "Lagu berhasil ditemukan! Kamu WAJIB berkata kepada pengguna secara lisan: 'Saya menemukan lagu " + tit + " dengan durasi " + dur + ". Apakah kamu yakin ingin memutarnya?'. TUNGGU jawaban pengguna, JANGAN panggil play_youtube sekarang!";
+                cJSON_AddStringToObject(res, "instruction", instruction.c_str());
+            } else {
+                cJSON_AddBoolToObject(res, "found", false);
+                cJSON_AddStringToObject(res, "instruction", "Lagu tidak ditemukan di YouTube. Beritahu pengguna bahwa lagu tersebut tidak ditemukan.");
+            }
+            return res;
+        });
+
+    AddTool("self.audio.play_youtube",
+        "Putar audio YouTube ke speaker setelah pengguna mengonfirmasi 'ya'.",
+        PropertyList({
+            Property("video_id", kPropertyTypeString),
+            Property("title", kPropertyTypeString),
+            Property("duration", kPropertyTypeString, std::string(""))
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            std::string video_id = properties["video_id"].value<std::string>();
+            std::string title = properties["title"].value<std::string>();
+            std::string duration = properties.has("duration") ? properties["duration"].value<std::string>() : "";
+            
+            auto& app = Application::GetInstance();
+            if (app.IsSongConfirmationPending()) {
+                ESP_LOGI(TAG, "Tool Call: self.audio.play_youtube (confirmed): title=\"%s\", vid=%s, dur=%s", 
+                         title.c_str(), video_id.c_str(), duration.c_str());
+                app.ClearSongConfirmation();
+                YouTubeAudioPoller::GetInstance().PlaySong(video_id, title, duration);
+                return true;
+            } else {
+                ESP_LOGW(TAG, "Tool Call: self.audio.play_youtube called directly without user confirmation! Forcing search & confirmation.");
+                std::string query = !title.empty() ? title : video_id;
+                std::string found_vid, found_tit, found_dur;
+                bool found = YouTubeAudioPoller::GetInstance().SearchSong(query, found_vid, found_tit, found_dur);
+                
+                cJSON* res = cJSON_CreateObject();
+                if (found) {
+                    cJSON_AddBoolToObject(res, "found", true);
+                    cJSON_AddStringToObject(res, "video_id", found_vid.c_str());
+                    cJSON_AddStringToObject(res, "title", found_tit.c_str());
+                    cJSON_AddStringToObject(res, "duration", found_dur.c_str());
+                    std::string instruction = "Lagu ditemukan: '" + found_tit + "' (durasi: " + found_dur + "). Kamu WAJIB memberitahu pengguna judul dan durasi ini secara lisan, lalu tanyakan konfirmasi apakah yakin ingin diputar. TUNGGU jawaban 'ya' dari pengguna sebelum memutar.";
+                    cJSON_AddStringToObject(res, "instruction", instruction.c_str());
+                } else {
+                    cJSON_AddBoolToObject(res, "found", false);
+                    cJSON_AddStringToObject(res, "instruction", "Lagu tidak ditemukan di YouTube.");
+                }
+                return res;
+            }
+        });
+
+    AddTool("self.audio.get_playback_status",
+        "Get current audio playback status (is_playing, title, video_id, duration, current_duration).",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            auto& yt = YouTubeAudioPoller::GetInstance();
+            cJSON* json = cJSON_CreateObject();
+            cJSON_AddBoolToObject(json, "is_playing", yt.IsPlaying());
+            cJSON_AddStringToObject(json, "title", yt.GetCurrentTitle().c_str());
+            cJSON_AddStringToObject(json, "video_id", yt.GetCurrentVideoId().c_str());
+            cJSON_AddStringToObject(json, "total_duration", yt.GetTotalDuration().c_str());
+            cJSON_AddStringToObject(json, "current_duration", yt.GetCurrentDuration().c_str());
+            cJSON_AddNumberToObject(json, "current_duration_sec", yt.GetCurrentDurationSec());
+            cJSON_AddNumberToObject(json, "total_duration_sec", yt.GetTotalDurationSec());
+            return json;
+        });
+
+    AddTool("self.audio.stop",
+        "Stop any currently playing YouTube audio stream.",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            ESP_LOGI(TAG, "Tool Call: self.audio.stop");
+            if (YouTubeAudioPoller::GetInstance().IsPlaying()) {
+                YouTubeAudioPoller::GetInstance().Abort();
+                return true;
+            }
+            return false;
+        });
     
     auto backlight = board.GetBacklight();
     if (backlight) {
