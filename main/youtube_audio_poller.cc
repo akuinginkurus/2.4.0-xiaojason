@@ -586,8 +586,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
         display->SetChatMessage("assistant", display_title.c_str());
         std::string init_status = "00:00 / " + total_duration_str_;
         display->SetStatus(init_status.c_str());
-        display->SetEmotion("music");
-        display->SetFaceState(FaceState::Music);
+        display->SetEmotion("happy");
         display->ShowNotification(display_title.c_str(), 5000);
     }
 
@@ -970,8 +969,8 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                             session_frames++;
                             update_duration_progress(frames_pushed);
                             if (frames_pushed == 1 || frames_pushed % 50 == 0) {
-                                ESP_LOGI(TAG, "Audio frame #%d pushed to decoder (len=%u, q_size=%u)",
-                                         frames_pushed, (unsigned int)pkt_len, (unsigned int)app.GetAudioService().GetDecodeQueueSize());
+                                ESP_LOGI(TAG, "Audio frame #%d pushed to decoder (len=%u)",
+         frames_pushed, (unsigned int)pkt_len);
                             }
                         }
 
@@ -1056,7 +1055,6 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
             display->SetChatMessage("system", "");
             display->SetStatus("Mendengarkan...");
             display->SetEmotion("neutral");
-            display->SetFaceState(FaceState::Listening);
         }
     } else if (was_aborted) {
         ESP_LOGI(TAG, ">> DETEKSI: Lagu YouTube \"%s\" DIHENTIKAN (Durasi: %s / %s) <<",
@@ -1067,7 +1065,6 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
             display->SetChatMessage("system", "");
             display->SetStatus(Lang::Strings::STANDBY);
             display->SetEmotion("neutral");
-            display->SetFaceState(FaceState::Idle);
         }
     } else {
         ESP_LOGW(TAG, ">> DETEKSI: Gagal streaming lagu YouTube \"%s\" (frames=%d, bytes=%zu) <<",
@@ -1077,7 +1074,6 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
             display->SetChatMessage("assistant", "Gagal memutar lagu dari YouTube.");
             display->SetStatus(Lang::Strings::STANDBY);
             display->SetEmotion("neutral");
-            display->SetFaceState(FaceState::Idle);
         }
     }
 
