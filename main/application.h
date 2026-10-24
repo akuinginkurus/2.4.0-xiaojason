@@ -11,7 +11,7 @@
 #include <deque>
 #include <memory>
 #include <functional>
-
+#include <atomic>
 #include "protocol.h"
 #include "ota.h"
 #include "audio_service.h"
@@ -67,6 +67,10 @@ public:
 
     DeviceState GetDeviceState() const { return state_machine_.GetState(); }
     bool IsVoiceDetected() const { return audio_service_.IsVoiceDetected(); }
+
+    bool IsSongConfirmationPending() const { return song_confirmation_pending_.load(); }
+    void SetSongConfirmationPending() { song_confirmation_pending_.store(true); }
+    void ClearSongConfirmation() { song_confirmation_pending_.store(false); }
     
     /**
      * Request state transition
@@ -145,7 +149,7 @@ private:
     std::string last_error_message_;
     AudioService audio_service_;
     std::unique_ptr<Ota> ota_;
-
+    std::atomic<bool> song_confirmation_pending_{false};
     std::function<void(const std::string&)> mcp_broadcast_callback_;
 
     bool has_server_time_ = false;
