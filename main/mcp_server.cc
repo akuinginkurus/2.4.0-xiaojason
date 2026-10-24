@@ -9,7 +9,7 @@
 #include <algorithm>
 #include <cstring>
 #include <esp_pthread.h>
-
+#include "youtube_audio_poller.h"
 #include "application.h"
 #include "display.h"
 #include "oled_display.h"
