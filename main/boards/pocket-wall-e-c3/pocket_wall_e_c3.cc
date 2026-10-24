@@ -101,6 +101,13 @@ private:
     Button action_button_;
     MotorController* motor_controller_ = nullptr;
 
+    void InitializeListeningLed() {
+        gpio_reset_pin(GPIO_NUM_12);
+        ESP_ERROR_CHECK(
+            gpio_set_direction(GPIO_NUM_12, GPIO_MODE_OUTPUT));
+        gpio_set_level(GPIO_NUM_12, 1);
+    }
+
     void InitializeDisplayI2c() {
         i2c_master_bus_config_t bus_config = {};
         bus_config.i2c_port = I2C_NUM_0;
