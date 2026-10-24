@@ -68,14 +68,6 @@ public:
     DeviceState GetDeviceState() const { return state_machine_.GetState(); }
     bool IsVoiceDetected() const { return audio_service_.IsVoiceDetected(); }
 
-    bool IsSongConfirmationPending() const { return song_confirmation_pending_.load(); }
-    void SetSongConfirmationPending() { song_confirmation_pending_.store(true); }
-    void ClearSongConfirmation() { song_confirmation_pending_.store(false); }
-    void ArmSongConfirmation(const std::string& video_id, const std::string& title, const std::string& duration);
-    void RequestSongConfirmation(const std::string& video_id, const std::string& title, const std::string& duration);
-    void OnSongNotFound();
-    void EnterListeningModeAfterSong();
-    
     /**
      * Request state transition
      * Returns true if transition was successful
@@ -130,13 +122,21 @@ public:
     AecMode GetAecMode() const { return aec_mode_; }
     void PlaySound(const std::string_view& sound);
     AudioService& GetAudioService() { return audio_service_; }
-    
+
     /**
      * Reset protocol resources (thread-safe)
      * Can be called from any task to release resources allocated after network connected
      * This includes closing audio channel, resetting protocol and ota objects
      */
     void ResetProtocol();
+
+    // ---- YouTube song confirmation flow ----
+    void EnterListeningModeAfterSong();
+    void RequestSongConfirmation(const std::string& video_id, const std::string& title, const std::string& duration);
+    void ArmSongConfirmation(const std::string& video_id, const std::string& title, const std::string& duration);
+    void ClearSongConfirmation();
+    void OnSongNotFound();
+    bool IsSongConfirmationPending() const { return song_confirmation_pending_; }
 
 private:
     Application();
@@ -153,11 +153,16 @@ private:
     std::string last_error_message_;
     AudioService audio_service_;
     std::unique_ptr<Ota> ota_;
-    std::atomic<bool> song_confirmation_pending_{false};
-    std::string pending_song_id_;
-    std::string pending_song_title_;
-    std::string pending_song_duration_;
     std::function<void(const std::string&)> mcp_broadcast_callback_;
+
+    // YouTube song confirmation state
+    bool youtube_song_requested_ = false;
+    std::string youtube_song_query_;
+    bool song_confirmation_pending_ = false;
+    int64_t song_confirmation_deadline_us_ = 0;
+    std::string song_confirm_video_id_;
+    std::string song_confirm_title_;
+    std::string song_confirm_duration_;
 
     bool has_server_time_ = false;
     bool aborted_ = false;
@@ -167,6 +172,8 @@ private:
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
 
+    bool TryHandleSongConfirmation(const std::string& text);
+    void HandleUserTextForSong(const std::string& text);
 
     // Event handlers
     void HandleStateChangedEvent();
@@ -193,7 +200,7 @@ private:
     void ShowActivationCode(const std::string& code, const std::string& message);
     void SetListeningMode(ListeningMode mode);
     ListeningMode GetDefaultListeningMode() const;
-    
+
     // State change handler called by state machine
     void OnStateChanged(DeviceState old_state, DeviceState new_state);
 };
