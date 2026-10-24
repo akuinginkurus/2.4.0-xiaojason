@@ -71,6 +71,10 @@ public:
     bool IsSongConfirmationPending() const { return song_confirmation_pending_.load(); }
     void SetSongConfirmationPending() { song_confirmation_pending_.store(true); }
     void ClearSongConfirmation() { song_confirmation_pending_.store(false); }
+    void ArmSongConfirmation(const std::string& video_id, const std::string& title, const std::string& duration);
+    void RequestSongConfirmation(const std::string& video_id, const std::string& title, const std::string& duration);
+    void OnSongNotFound();
+    void EnterListeningModeAfterSong();
     
     /**
      * Request state transition
@@ -150,6 +154,9 @@ private:
     AudioService audio_service_;
     std::unique_ptr<Ota> ota_;
     std::atomic<bool> song_confirmation_pending_{false};
+    std::string pending_song_id_;
+    std::string pending_song_title_;
+    std::string pending_song_duration_;
     std::function<void(const std::string&)> mcp_broadcast_callback_;
 
     bool has_server_time_ = false;
