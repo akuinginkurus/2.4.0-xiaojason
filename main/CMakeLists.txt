@@ -39,6 +39,7 @@ set(SOURCES "audio/audio_codec.cc"
             "settings.cc"
             "device_state_machine.cc"
             "assets.cc"
+            "youtube_audio_poller.cc"
             "main.cc"
             )
 
