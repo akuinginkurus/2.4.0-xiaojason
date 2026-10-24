@@ -5,7 +5,7 @@
 #include "pocket_oled_display.h"
 #include "wifi_board.h"
 #include <driver/gpio.h>
-#include "led/gpio_led.h"
+#include "led/led.h"
 #include <driver/i2c_master.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_panel_vendor.h>
@@ -88,6 +88,29 @@ protected:
             }
         }
         return count;
+    }
+};
+
+class ListeningLed : public Led {
+private:
+    gpio_num_t gpio_;
+    bool invert_;
+
+    void Set(bool on) {
+        gpio_set_level(gpio_, (on != invert_) ? 1 : 0);
+    }
+
+public:
+    ListeningLed(gpio_num_t gpio, bool invert = false)
+        : gpio_(gpio), invert_(invert) {
+        gpio_reset_pin(gpio_);
+        gpio_set_direction(gpio_, GPIO_MODE_OUTPUT);
+        Set(false);
+    }
+
+    void OnStateChanged() override {
+        auto state = Application::GetInstance().GetDeviceState();
+        Set(state == kDeviceStateListening);  // hanya listening yang nyala
     }
 };
 
@@ -176,10 +199,9 @@ public:
     }
 
 Led* GetLed() override {
-    static GpioLed led(BUILTIN_LED_GPIO, 1);  // coba 1 kalau nyalanya terbalik
+    static ListeningLed led(BUILTIN_LED_GPIO, false);  // true kalau LED active-low
     return &led;
 }
-
     AudioCodec* GetAudioCodec() override {
         static_assert(AUDIO_INPUT_SAMPLE_RATE == AUDIO_OUTPUT_SAMPLE_RATE,
                       "Full-duplex shared I2S requires matching RX/TX rates");
