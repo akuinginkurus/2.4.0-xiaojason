@@ -77,15 +77,12 @@ void McpServer::AddCommonTools() {
             cJSON* res = cJSON_CreateObject();
             if (found) {
                 cJSON_AddBoolToObject(res, "found", true);
-                Application::GetInstance().SetSongConfirmationPending();
                 cJSON_AddStringToObject(res, "video_id", vid.c_str());
                 cJSON_AddStringToObject(res, "title", tit.c_str());
                 cJSON_AddStringToObject(res, "duration", dur.c_str());
                 std::string instruction = "Lagu berhasil ditemukan! Kamu WAJIB berkata kepada pengguna secara lisan: 'Saya menemukan lagu " + tit + " dengan durasi " + dur + ". Apakah kamu yakin ingin memutarnya?'. TUNGGU jawaban pengguna, JANGAN panggil play_youtube sekarang!";
                 cJSON_AddStringToObject(res, "instruction", instruction.c_str());
             } else {
-                cJSON_AddBoolToObject(res, "found", true);
-                Application::GetInstance().SetSongConfirmationPending();
                 cJSON_AddBoolToObject(res, "found", false);
                 cJSON_AddStringToObject(res, "instruction", "Lagu tidak ditemukan di YouTube. Beritahu pengguna bahwa lagu tersebut tidak ditemukan.");
             }
