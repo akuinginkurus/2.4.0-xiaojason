@@ -102,12 +102,6 @@ private:
     Button action_button_;
     MotorController* motor_controller_ = nullptr;
 
-    void InitializeListeningLed() {
-        gpio_reset_pin(GPIO_NUM_8);
-        ESP_ERROR_CHECK(
-            gpio_set_direction(GPIO_NUM_8, GPIO_MODE_OUTPUT));
-        gpio_set_level(GPIO_NUM_8, 1);
-    }
 
     void InitializeDisplayI2c() {
         i2c_master_bus_config_t bus_config = {};
@@ -180,6 +174,11 @@ public:
                                                 MOTOR_RIGHT_IN1_PIN, MOTOR_RIGHT_IN2_PIN);
         ESP_LOGI(TAG, "Pocket Wall-E C3 initialized");
     }
+
+Led* GetLed() override {
+    static GpioLed led(BUILTIN_LED_GPIO, 1);  // coba 1 kalau nyalanya terbalik
+    return &led;
+}
 
     AudioCodec* GetAudioCodec() override {
         static_assert(AUDIO_INPUT_SAMPLE_RATE == AUDIO_OUTPUT_SAMPLE_RATE,
