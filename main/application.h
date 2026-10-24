@@ -87,6 +87,13 @@ public:
 
     void AbortSpeaking(AbortReason reason);
 
+    void ResetAborted() { aborted_ = false; }
+    void CloseAudioChannel() {
+    Schedule([this]() {
+        if (protocol_) protocol_->CloseAudioChannel();
+    });
+    }
+
     /**
      * Toggle chat state (event-based, thread-safe)
      * Sends MAIN_EVENT_TOGGLE_CHAT to be handled in Run()
