@@ -102,10 +102,10 @@ private:
     MotorController* motor_controller_ = nullptr;
 
     void InitializeListeningLed() {
-        gpio_reset_pin(GPIO_NUM_12);
+        gpio_reset_pin(GPIO_NUM_8);
         ESP_ERROR_CHECK(
-            gpio_set_direction(GPIO_NUM_12, GPIO_MODE_OUTPUT));
-        gpio_set_level(GPIO_NUM_12, 1);
+            gpio_set_direction(GPIO_NUM_8, GPIO_MODE_OUTPUT));
+        gpio_set_level(GPIO_NUM_8, 1);
     }
 
     void InitializeDisplayI2c() {
