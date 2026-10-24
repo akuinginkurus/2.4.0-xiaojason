@@ -1189,3 +1189,28 @@ void Application::ResetProtocol() {
         protocol_.reset();
     });
 }
+
+void Application::ArmSongConfirmation(const std::string& video_id, const std::string& title, const std::string& duration) {
+    pending_song_id_ = video_id;
+    pending_song_title_ = title;
+    pending_song_duration_ = duration;
+    song_confirmation_pending_.store(true);
+    ESP_LOGI(TAG, "Song confirmation armed: %s (%s)", title.c_str(), duration.c_str());
+}
+
+void Application::RequestSongConfirmation(const std::string& video_id, const std::string& title, const std::string& duration) {
+    ArmSongConfirmation(video_id, title, duration);
+}
+
+void Application::OnSongNotFound() {
+    song_confirmation_pending_.store(false);
+    ESP_LOGW(TAG, "Song not found");
+}
+
+void Application::EnterListeningModeAfterSong() {
+    Schedule([this]() {
+        if (GetDeviceState() == kDeviceStateIdle) {
+            ToggleChatState();
+        }
+    });
+}
