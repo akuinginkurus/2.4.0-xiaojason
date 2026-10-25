@@ -23,18 +23,21 @@
 
 #define ACTION_BUTTON_GPIO GPIO_NUM_0
 
-// MX1508 dual H-bridge.
-#define MOTOR_LEFT_IN1_PIN GPIO_NUM_5
-#define MOTOR_LEFT_IN2_PIN GPIO_NUM_6
-#define MOTOR_RIGHT_IN1_PIN GPIO_NUM_7
-#define MOTOR_RIGHT_IN2_PIN GPIO_NUM_9
-#define MOTOR_LEFT_INVERT false
-#define MOTOR_RIGHT_INVERT false
-#define MOTOR_PWM_FREQUENCY_HZ 10000
-#define MOTOR_MIN_DUTY_PERCENT 100
-#define MOTOR_MAX_DUTY_PERCENT 100
-#define MOTOR_MAX_RUN_TIME_MS 5000
-#define MOTOR_DIRECTION_DEAD_TIME_MS 120
-#define MOTOR_DUAL_START_STAGGER_MS 40
+ // Continuous-rotation servo drive
+#define SERVO_LEFT_PIN GPIO_NUM_5
+#define SERVO_RIGHT_PIN GPIO_NUM_6
+
+// Ubah menjadi true jika arah putaran roda terbalik.
+#define SERVO_LEFT_INVERT false
+#define SERVO_RIGHT_INVERT false
+
+// Servo standar memakai sinyal sekitar 50 Hz.
+#define SERVO_PWM_FREQUENCY_HZ 50
+#define SERVO_NEUTRAL_PULSE_US 1500
+#define SERVO_MIN_PULSE_US 1000
+#define SERVO_MAX_PULSE_US 2000
+
+// Batas waktu gerak maksimum: 5 detik.
+#define SERVO_MAX_RUN_TIME_MS 5000
 
 #endif  // POCKET_WALL_E_C3_CONFIG_H
