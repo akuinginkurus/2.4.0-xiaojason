@@ -211,8 +211,7 @@ public:
         InitializeDisplayI2c();
         InitializeDisplay();
         InitializeButton();
-        motor_controller_ = new MotorController(MOTOR_LEFT_IN1_PIN, MOTOR_LEFT_IN2_PIN,
-                                                MOTOR_RIGHT_IN1_PIN, MOTOR_RIGHT_IN2_PIN);
+        motor_controller_ = new MotorController(SERVO_LEFT_PIN, SERVO_RIGHT_PIN);
         ESP_LOGI(TAG, "Pocket Wall-E C3 initialized");
     }
 
