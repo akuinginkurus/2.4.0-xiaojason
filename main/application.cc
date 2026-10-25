@@ -1077,7 +1077,13 @@ void Application::HandleStateChangedEvent() {
             display->ClearChatMessages();    // Clear messages first
             display->SetEmotion("neutral");  // Then set emotion (wechat mode checks child count)
             audio_service_.EnableVoiceProcessing(false);
-            audio_service_.EnableWakeWordDetection(true);
+            // Keep wake word OFF while a YouTube song is streaming: on ESP32-C3 the
+            // wake word task competes with the Opus decoder / HTTP stream for the
+            // very limited internal SRAM and caused an abort() right after playback
+            // started. YouTubeAudioPoller sets is_playing_=false before it returns
+            // the device to Idle, so wake word is restored automatically afterwards.
+            audio_service_.EnableWakeWordDetection(
+                !YouTubeAudioPoller::GetInstance().IsPlaying());
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
