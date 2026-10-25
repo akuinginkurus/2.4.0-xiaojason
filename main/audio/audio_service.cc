@@ -13,13 +13,13 @@
         .perf_type       = ESP_AE_RATE_CVT_PERF_TYPE_SPEED,  \
     }
 
-#define OPUS_DEC_CFG(_sample_rate, _frame_duration_ms)                                                    \
-    (esp_opus_dec_cfg_t)                                                                                  \
-    {                                                                                                     \
-        .sample_rate    = (uint32_t)(_sample_rate),                                                       \
-        .channel        = ESP_AUDIO_MONO,                                                                 \
-        .frame_duration = (esp_opus_dec_frame_duration_t)AS_OPUS_GET_FRAME_DRU_ENUM(_frame_duration_ms),  \
-        .self_delimited = false,                                                                          \
+#define OPUS_DEC_CFG(_sample_rate, _frame_duration_ms)                                              \
+    (esp_opus_dec_cfg_t)                                                                            \
+    {                                                                                               \
+        .sample_rate    = (uint32_t)(_sample_rate),                                                 \
+        .channel        = ESP_AUDIO_MONO,                                                           \
+        .frame_duration = (esp_opus_dec_frame_duration_t)AS_OPUS_GET_FRAME_DRU_ENUM(_frame_duration_ms), \
+        .self_delimited = false,                                                                    \
     }
 
 #if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4 || CONFIG_IDF_TARGET_ESP32S31
@@ -29,6 +29,19 @@
 #endif
 
 #define TAG "AudioService"
+
+// ---------------------------------------------------------------------------
+// Music mode (YouTube streaming on ESP32-C3)
+// While a song is streaming, the wake word / audio engine (~30 KB of internal SRAM)
+// is released so the HTTP stream + Opus decoder have enough heap. It is rebuilt on
+// demand (InitializeAudioEngine) once music mode is switched off again.
+// ---------------------------------------------------------------------------
+static std::mutex g_engine_mutex;
+static volatile bool g_music_mode = false;
+
+void AudioServiceSetMusicMode(bool on) {
+    g_music_mode = on;
+}
 
 AudioService::AudioService() {
     event_group_ = xEventGroupCreate();
@@ -65,6 +78,7 @@ void AudioService::Initialize(AudioCodec* codec) {
         decoder_duration_ms_ = OPUS_FRAME_DURATION_MS;
         decoder_frame_size_ = decoder_sample_rate_ / 1000 * OPUS_FRAME_DURATION_MS;
     }
+
     esp_opus_enc_config_t opus_enc_cfg = AS_OPUS_ENC_CONFIG();
     ret = esp_opus_enc_open(&opus_enc_cfg, sizeof(esp_opus_enc_config_t), &opus_encoder_);
     if (opus_encoder_ == nullptr) {
@@ -90,15 +104,18 @@ void AudioService::Initialize(AudioCodec* codec) {
 #else
     audio_engine_ = std::make_unique<LiteAudioEngine>();
 #endif
+
     audio_engine_->OnOutput([this](std::vector<int16_t>&& data) {
         PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue, std::move(data));
     });
+
     audio_engine_->OnVadStateChange([this](bool speaking) {
         voice_detected_ = speaking;
         if (callbacks_.on_vad_change) {
             callbacks_.on_vad_change(speaking);
         }
     });
+
     audio_engine_->OnWakeWordDetected([this](const std::string& wake_word) {
         xEventGroupClearBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
         if (callbacks_.on_wake_word_detected) {
@@ -122,7 +139,7 @@ void AudioService::Initialize(AudioCodec* codec) {
 void AudioService::Start() {
     service_stopped_.store(false);
     xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING | AS_EVENT_WAKE_WORD_RUNNING |
-        AS_EVENT_AUDIO_PROCESSOR_RUNNING | AS_EVENT_AUDIO_INPUT_STOP_REQUEST);
+                                           AS_EVENT_AUDIO_PROCESSOR_RUNNING | AS_EVENT_AUDIO_INPUT_STOP_REQUEST);
 
     esp_timer_start_periodic(audio_power_timer_, 1000000);
 
@@ -168,8 +185,8 @@ void AudioService::Stop() {
     esp_timer_stop(audio_power_timer_);
     service_stopped_.store(true);
     xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING |
-        AS_EVENT_WAKE_WORD_RUNNING |
-        AS_EVENT_AUDIO_PROCESSOR_RUNNING);
+                                         AS_EVENT_WAKE_WORD_RUNNING |
+                                         AS_EVENT_AUDIO_PROCESSOR_RUNNING);
 
     bool notify_drained = false;
     {
@@ -207,7 +224,7 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
             auto resampled = std::vector<int16_t>(output_samples * codec_->input_channels());
             uint32_t actual_output = output_samples;
             esp_ae_rate_cvt_process(input_resampler_, (esp_ae_sample_t)data.data(), in_sample_num,
-                                   (esp_ae_sample_t)resampled.data(), &actual_output);
+                                    (esp_ae_sample_t)resampled.data(), &actual_output);
             resampled.resize(actual_output * codec_->input_channels());
             data = std::move(resampled);
         }
@@ -235,12 +252,12 @@ bool AudioService::ReadAudioData(std::vector<int16_t>& data, int sample_rate, in
 
 void AudioService::AudioInputTask() {
     constexpr EventBits_t kAudioInputActiveBits = AS_EVENT_AUDIO_TESTING_RUNNING |
-        AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING;
+                                                  AS_EVENT_WAKE_WORD_RUNNING | AS_EVENT_AUDIO_PROCESSOR_RUNNING;
 
     while (true) {
         EventBits_t bits = xEventGroupWaitBits(event_group_, kAudioInputActiveBits |
-            AS_EVENT_AUDIO_INPUT_STOP_REQUEST,
-            pdFALSE, pdFALSE, portMAX_DELAY);
+                                                                 AS_EVENT_AUDIO_INPUT_STOP_REQUEST,
+                                               pdFALSE, pdFALSE, portMAX_DELAY);
 
         if (service_stopped_.load()) {
             // ADC continuous mode keeps its hardware mutex from start until stop,
@@ -253,7 +270,6 @@ void AudioService::AudioInputTask() {
 
         if (bits & AS_EVENT_AUDIO_INPUT_STOP_REQUEST) {
             xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_INPUT_STOP_REQUEST);
-
             // Recheck the active state in this task. Audio capture may have been
             // enabled after the timer posted the stop request.
             bits = xEventGroupGetBits(event_group_);
@@ -299,7 +315,13 @@ void AudioService::AudioInputTask() {
             int samples = 160; // 10ms
             std::vector<int16_t> data;
             if (ReadAudioData(data, 16000, samples)) {
-                audio_engine_->Feed(std::move(data));
+                {
+                    // The engine can be released while music is streaming
+                    std::lock_guard<std::mutex> engine_lock(g_engine_mutex);
+                    if (audio_engine_ && audio_engine_initialized_) {
+                        audio_engine_->Feed(std::move(data));
+                    }
+                }
                 continue;
             }
         }
@@ -332,7 +354,6 @@ void AudioService::AudioOutputTask() {
             esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
             codec_->EnableOutput(true);
         }
-
         codec_->OutputData(task->pcm);
 
         /* Update the last output time */
@@ -365,8 +386,8 @@ void AudioService::OpusCodecTask() {
         std::unique_lock<std::mutex> lock(audio_queue_mutex_);
         audio_queue_cv_.wait(lock, [this]() {
             return service_stopped_.load() ||
-                !audio_encode_queue_.empty() ||
-                (!audio_decode_queue_.empty() && audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE);
+                   !audio_encode_queue_.empty() ||
+                   (!audio_decode_queue_.empty() && audio_playback_queue_.size() < MAX_PLAYBACK_TASKS_IN_QUEUE);
         });
         if (service_stopped_.load()) {
             break;
@@ -389,21 +410,25 @@ void AudioService::OpusCodecTask() {
             bool decoded = false;
             if (opus_decoder_ != nullptr) {
                 task->pcm.resize(decoder_frame_size_);
+
                 esp_audio_dec_in_raw_t raw = {
                     .buffer = (uint8_t *)(packet->payload.data()),
                     .len = (uint32_t)(packet->payload.size()),
                     .consumed = 0,
                     .frame_recover = ESP_AUDIO_DEC_RECOVERY_NONE,
                 };
+
                 esp_audio_dec_out_frame_t out_frame = {
                     .buffer = (uint8_t *)(task->pcm.data()),
                     .len = (uint32_t)(task->pcm.size() * sizeof(int16_t)),
                     .decoded_size = 0,
                 };
+
                 esp_audio_dec_info_t dec_info = {};
                 std::unique_lock<std::mutex> decoder_lock(decoder_mutex_);
                 auto ret = esp_opus_dec_decode(opus_decoder_, &raw, &out_frame, &dec_info);
                 decoder_lock.unlock();
+
                 if (ret == ESP_AUDIO_ERR_OK) {
                     task->pcm.resize(out_frame.decoded_size / sizeof(int16_t));
                     if (decoder_sample_rate_ != codec_->output_sample_rate() && output_resampler_ != nullptr) {
@@ -433,11 +458,13 @@ void AudioService::OpusCodecTask() {
             const bool notify_drained = MarkPlaybackDrainedLocked();
             audio_queue_cv_.notify_all();
             lock.unlock();
+
             if (notify_drained && callbacks_.on_playback_drained) {
                 callbacks_.on_playback_drained();
             }
             lock.lock();
         }
+
         /* Encode the audio to send queue */
         if (!audio_encode_queue_.empty()) {
             auto task = std::move(audio_encode_queue_.front());
@@ -449,9 +476,9 @@ void AudioService::OpusCodecTask() {
             packet->frame_duration = OPUS_FRAME_DURATION_MS;
             packet->sample_rate = 16000;
             packet->timestamp = task->timestamp;
-
             if (opus_encoder_ != nullptr && task->pcm.size() == encoder_frame_size_) {
                 std::vector<uint8_t> buf(encoder_outbuf_size_);
+
                 esp_audio_enc_in_frame_t in = {
                     .buffer = (uint8_t *)(task->pcm.data()),
                     .len = (uint32_t)(encoder_frame_size_ * sizeof(int16_t)),
@@ -461,6 +488,7 @@ void AudioService::OpusCodecTask() {
                     .len = (uint32_t)encoder_outbuf_size_,
                     .encoded_bytes = 0,
                 };
+
                 auto ret = esp_opus_enc_process(opus_encoder_, &in, &out);
                 if (ret == ESP_AUDIO_ERR_OK) {
                     packet->payload.assign(buf.data(), buf.data() + out.encoded_bytes);
@@ -501,12 +529,14 @@ void AudioService::SetDecodeSampleRate(int sample_rate, int frame_duration) {
     if (decoder_sample_rate_ == sample_rate && decoder_duration_ms_ == frame_duration) {
         return;
     }
+
     std::unique_lock<std::mutex> decoder_lock(decoder_mutex_);
     if (opus_decoder_ != nullptr) {
         esp_opus_dec_close(opus_decoder_);
         opus_decoder_ = nullptr;
     }
     decoder_lock.unlock();
+
     esp_opus_dec_cfg_t opus_dec_cfg = OPUS_DEC_CFG(sample_rate, frame_duration);
     auto ret = esp_opus_dec_open(&opus_dec_cfg, sizeof(esp_opus_dec_cfg_t), &opus_decoder_);
     if (opus_decoder_ == nullptr) {
@@ -561,6 +591,7 @@ void AudioService::PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t
             audio_encode_queue_.pop_front();
             dropped_total = ++debug_statistics_.encode_drop_count;
         }
+
         audio_encode_queue_.push_back(std::move(task));
         audio_queue_cv_.notify_all();
     }
@@ -583,7 +614,7 @@ bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> pa
         if (wait) {
             audio_queue_cv_.wait(lock, [this]() {
                 return service_stopped_.load() ||
-                    audio_decode_queue_.size() < MAX_DECODE_PACKETS_IN_QUEUE;
+                       audio_decode_queue_.size() < MAX_DECODE_PACKETS_IN_QUEUE;
             });
         } else {
             return false;
@@ -630,6 +661,7 @@ std::unique_ptr<AudioStreamPacket> AudioService::PopWakeWordPacket() {
 
 void AudioService::EnableWakeWordDetection(bool enable) {
     ESP_LOGD(TAG, "%s wake word detection", enable ? "Enabling" : "Disabling");
+
     if (enable) {
         if (!InitializeAudioEngine() || !audio_engine_->HasWakeWord()) {
             xEventGroupClearBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
@@ -644,10 +676,23 @@ void AudioService::EnableWakeWordDetection(bool enable) {
         audio_engine_->EnableWakeWordDetection(true);
         xEventGroupSetBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
     } else {
-        if (audio_engine_initialized_) {
-            audio_engine_->EnableWakeWordDetection(false);
-        }
         xEventGroupClearBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
+        if (g_music_mode) {
+            // Music is streaming: also stop the voice processor and give the engine
+            // a moment to leave Feed() before it is released below.
+            xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_PROCESSOR_RUNNING);
+            vTaskDelay(pdMS_TO_TICKS(60));
+        }
+        std::lock_guard<std::mutex> engine_lock(g_engine_mutex);
+        if (audio_engine_initialized_ && audio_engine_ != nullptr) {
+            audio_engine_->EnableWakeWordDetection(false);
+            if (g_music_mode) {
+                ESP_LOGI(TAG, "Music mode: releasing audio engine to free internal SRAM");
+                audio_engine_->EnableVoiceProcessing(false);
+                audio_engine_.reset();
+                audio_engine_initialized_ = false;
+            }
+        }
     }
 }
 
@@ -695,7 +740,6 @@ void AudioService::EnableAudioTesting(bool enable) {
 void AudioService::EnableDeviceAec(bool enable) {
     ESP_LOGI(TAG, "%s device AEC", enable ? "Enabling" : "Disabling");
     device_aec_enabled_ = enable;
-
     if (audio_engine_initialized_) {
         audio_engine_->EnableDeviceAec(enable);
     } else {
@@ -716,7 +760,6 @@ void AudioService::PlaySound(const std::string_view& ogg) {
 
     const auto* buf = reinterpret_cast<const uint8_t*>(ogg.data());
     size_t size = ogg.size();
-
     auto demuxer = std::make_unique<OggDemuxer>();
     demuxer->OnDemuxerFinished([this](const uint8_t* data, int sample_rate, size_t size){
         auto packet = std::make_unique<AudioStreamPacket>();
@@ -764,7 +807,7 @@ void AudioService::ResetDecoder() {
 
 bool AudioService::IsPlaybackDrainedLocked() const {
     return audio_decode_queue_.empty() && audio_playback_queue_.empty() &&
-        !decode_in_flight_ && !output_in_flight_;
+           !decode_in_flight_ && !output_in_flight_;
 }
 
 bool AudioService::MarkPlaybackDrainedLocked() {
@@ -808,16 +851,49 @@ bool AudioService::IsAfeWakeWord() {
 }
 
 bool AudioService::InitializeAudioEngine() {
+    // Serialize (re)initialization: it can be requested from the main task and the YouTube task.
+    static std::mutex init_mutex;
+    std::lock_guard<std::mutex> init_lock(init_mutex);
+
     if (!audio_engine_) {
-        return false;
+        // The engine was released while music was streaming. Never rebuild it during
+        // music (that would take the SRAM back); rebuild it once music mode is off.
+        if (g_music_mode) {
+            return false;
+        }
+        std::lock_guard<std::mutex> engine_lock(g_engine_mutex);
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4 || CONFIG_IDF_TARGET_ESP32S31
+        audio_engine_ = std::make_unique<AfeAudioEngine>();
+#else
+        audio_engine_ = std::make_unique<LiteAudioEngine>();
+#endif
+        audio_engine_->OnOutput([this](std::vector<int16_t>&& data) {
+            PushTaskToEncodeQueue(kAudioTaskTypeEncodeToSendQueue, std::move(data));
+        });
+        audio_engine_->OnVadStateChange([this](bool speaking) {
+            voice_detected_ = speaking;
+            if (callbacks_.on_vad_change) {
+                callbacks_.on_vad_change(speaking);
+            }
+        });
+        audio_engine_->OnWakeWordDetected([this](const std::string& wake_word) {
+            xEventGroupClearBits(event_group_, AS_EVENT_WAKE_WORD_RUNNING);
+            if (callbacks_.on_wake_word_detected) {
+                callbacks_.on_wake_word_detected(wake_word);
+            }
+        });
+        ESP_LOGI(TAG, "Audio engine rebuilt after music mode");
     }
+
     if (audio_engine_initialized_) {
         return true;
     }
+
     if (!audio_engine_->Initialize(codec_, OPUS_FRAME_DURATION_MS, models_list_)) {
         ESP_LOGE(TAG, "Failed to initialize audio engine");
         return false;
     }
+
     audio_engine_initialized_ = true;
     audio_engine_->EnableDeviceAec(device_aec_enabled_);
     return true;
