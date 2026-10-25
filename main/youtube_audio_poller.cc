@@ -581,13 +581,12 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     // Report playing status now that TTS speaking is done and audio channel is closed
     ReportStatus("playing", video_id);
 
-    std::string display_title = "[PLAY] " + title;
+    // Keep UI work minimal while streaming: the internal heap of the ESP32-C3 is
+    // extremely tight and LVGL hangs (watchdog) if one of its allocations fails.
+    // No long song title, no emotion change, only a short static status.
     if (display != nullptr) {
-        display->SetChatMessage("assistant", display_title.c_str());
-        std::string init_status = "00:00 / " + total_duration_str_;
-        display->SetStatus(init_status.c_str());
-        display->SetEmotion("happy");
-        display->ShowNotification(display_title.c_str(), 5000);
+        display->SetChatMessage("assistant", "");
+        display->SetStatus("Memutar lagu");
     }
 
     // Set performance mode first to stabilize CPU frequency at 160MHz before codec I2C init
@@ -639,6 +638,8 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
 
     static const uint8_t OGGS_MAGIC[4] = {'O', 'g', 'g', 'S'};
     static const size_t kOggBufCap = 2048;
+    // Stop streaming (instead of freezing the whole device) when internal heap gets this low
+    static const size_t kLowHeapAbortBytes = 9000;
     auto ogg_buf = std::make_unique<uint8_t[]>(kOggBufCap);
 
     size_t total_bytes_streamed = 0;
@@ -660,9 +661,17 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                 std::lock_guard<std::mutex> lock(song_mutex_);
                 current_duration_str_ = cur_str;
             }
-            if (display != nullptr) {
+            // Redraw the OLED only every 10 s to keep LVGL allocations rare
+            if (display != nullptr && cur_sec % 10 == 0) {
                 std::string status_str = cur_str + " / " + total_duration_str_;
                 display->SetStatus(status_str.c_str());
+            }
+            // Heap trend log (send these lines back if the device still hangs)
+            if (cur_sec % 2 == 0) {
+                ESP_LOGI(TAG, "HEAP @%s free=%u largest=%u min=%u", cur_str.c_str(),
+                         (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                         (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                         (unsigned int)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
             }
             if (cur_sec == 1 || cur_sec % 5 == 0) {
                 if (total_duration_sec_ > 0) {
@@ -764,6 +773,16 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
             while (running_.load() && !abort_requested_.load()) {
                 int64_t now_us = esp_timer_get_time();
                 bool playback_idle = app.GetAudioService().IsPlaybackIdle();
+
+                // Safety net: stop the stream before the heap is completely exhausted.
+                // Otherwise LVGL fails an allocation, spins forever and the whole device freezes.
+                if (frames_pushed > 0 &&
+                    heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < kLowHeapAbortBytes) {
+                    ESP_LOGE(TAG, "Internal heap critically low (%u B free), stopping stream to avoid a system freeze",
+                             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+                    abort_requested_ = true;
+                    break;
+                }
 
                 // Check live Wi-Fi signal periodically without lag
                 if (now_us - last_rssi_check_us > 5000000) {
