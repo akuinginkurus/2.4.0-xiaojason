@@ -6,6 +6,7 @@
 #include "wifi_board.h"
 #include <driver/gpio.h>
 #include "led/led.h"
+#include "youtube_audio_poller.h"
 #include <driver/i2c_master.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_panel_vendor.h>
@@ -176,17 +177,34 @@ private:
                                          DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
     }
 
-    void InitializeButton() {
-        action_button_.OnClick([this]() {
-            auto& app = Application::GetInstance();
-            if (app.GetDeviceState() == kDeviceStateStarting) {
-                EnterWifiConfigMode();
-                return;
-            }
-            app.ToggleChatState();
-        });
-        action_button_.OnLongPress([this]() { EnterWifiConfigMode(); });
-    }
+    
+void InitializeButton() {
+    action_button_.OnClick([this]() {
+        auto& app = Application::GetInstance();
+        auto& player = YouTubeAudioPoller::GetInstance();
+
+        // Tekan singkat ketika YouTube sedang diputar:
+        // hentikan lagu, jangan toggle chat.
+        if (player.IsPlaying()) {
+            ESP_LOGI(TAG, "Tombol ditekan: menghentikan lagu YouTube");
+            player.Abort();
+            return;
+        }
+
+        // Perilaku tombol normal tetap dipertahankan.
+        if (app.GetDeviceState() == kDeviceStateStarting) {
+            EnterWifiConfigMode();
+            return;
+        }
+
+        app.ToggleChatState();
+    });
+
+    action_button_.OnLongPress([this]() {
+        EnterWifiConfigMode();
+    });
+}
+
 
 public:
     PocketWallEC3Board() : action_button_(ACTION_BUTTON_GPIO) {
