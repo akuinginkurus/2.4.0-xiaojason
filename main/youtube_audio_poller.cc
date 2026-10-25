@@ -639,7 +639,9 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     static const uint8_t OGGS_MAGIC[4] = {'O', 'g', 'g', 'S'};
     static const size_t kOggBufCap = 2048;
     // Stop streaming (instead of freezing the whole device) when internal heap gets this low
-    static const size_t kLowHeapAbortBytes = 9000;
+    static const size_t kLowHeapAbortBytes = 5000;
+    // Never download more than this far ahead of real-time playback (keeps the decode queue small)
+    static const int64_t kMaxLeadUs = 1000000;
     auto ogg_buf = std::make_unique<uint8_t[]>(kOggBufCap);
 
     size_t total_bytes_streamed = 0;
@@ -765,6 +767,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
 
         // Dynamic Pre-Buffer (Jitter Buffer):
         // 4 frames (~240ms) on good signal, 6 frames (~360ms) on weaker signal or reconnect
+        int64_t play_clock_start_us = 0;
         size_t prebuffer_target = (live_rssi >= -75 && frames_pushed == 0) ? 4 : 6;
         std::vector<std::unique_ptr<AudioStreamPacket>> prebuffer;
         bool is_prebuffering = true;
@@ -782,6 +785,17 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                              (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
                     abort_requested_ = true;
                     break;
+                }
+
+                // Pace the download: do not run far ahead of real-time playback.
+                // Every queued frame costs heap, and heap is the scarce resource here.
+                if (!is_prebuffering && play_clock_start_us > 0) {
+                    int64_t pushed_us = (int64_t)session_frames * 60000;
+                    int64_t played_us = now_us - play_clock_start_us;
+                    if (pushed_us - played_us > kMaxLeadUs) {
+                        vTaskDelay(pdMS_TO_TICKS(40));
+                        continue;
+                    }
                 }
 
                 // Check live Wi-Fi signal periodically without lag
@@ -964,7 +978,9 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                         // Push raw Opus frame (decode directly at codec output sample rate: 16kHz)
                         auto packet = std::make_unique<AudioStreamPacket>();
                         auto codec = Board::GetInstance().GetAudioCodec();
-                        packet->sample_rate = (codec != nullptr) ? codec->output_sample_rate() : 16000;
+                        (void)codec;
+                        packet->sample_rate = (sample_rate == 8000 || sample_rate == 12000 || sample_rate == 16000 ||
+                                               sample_rate == 24000 || sample_rate == 48000) ? sample_rate : 16000;
                         packet->frame_duration = 60;
                         packet->payload.assign(pkt_ptr, pkt_ptr + pkt_len);
 
@@ -980,6 +996,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                                 }
                                 prebuffer.clear();
                                 is_prebuffering = false;
+                                play_clock_start_us = esp_timer_get_time();
                                 update_duration_progress(frames_pushed);
                             }
                         } else {
