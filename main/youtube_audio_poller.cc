@@ -22,6 +22,10 @@
 #include "assets/lang_config.h"
 
 static const char* TAG = "YTPoller";
+
+// Defined in audio/audio_service.cc: while true, the wake word / audio engine is released
+// (frees ~30 KB of internal SRAM) and is rebuilt on demand once it is switched off again.
+extern void AudioServiceSetMusicMode(bool on);
 std::string YouTubeAudioPoller::GetServerDomain() {
     nvs_handle_t nvs;
     char buf[64] = {};
@@ -538,6 +542,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
         current_duration_sec_ = 0;
     }
     is_playing_ = true;
+    AudioServiceSetMusicMode(true);
     abort_requested_ = false;
     app.ResetAborted();
 
@@ -561,6 +566,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
 
     if (abort_requested_.load()) {
         is_playing_ = false;
+    AudioServiceSetMusicMode(false);
         {
             std::lock_guard<std::mutex> lock(song_mutex_);
             current_video_id_.clear();
@@ -609,6 +615,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
     auto network = Board::GetInstance().GetNetwork();
     if (network == nullptr) {
         is_playing_ = false;
+    AudioServiceSetMusicMode(false);
         {
             std::lock_guard<std::mutex> lock(song_mutex_);
             current_video_id_.clear();
@@ -1070,6 +1077,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
 
     was_aborted = abort_requested_.load();
     is_playing_ = false;
+    AudioServiceSetMusicMode(false);
 
     int final_sec = (int)(frames_pushed * 0.060f);
     std::string final_dur_str = FormatSecondsToDuration(final_sec);
