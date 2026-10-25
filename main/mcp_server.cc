@@ -545,7 +545,7 @@ void McpServer::ReplyError(int id, const std::string& message) {
 }
 
 void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_only_tools) {
-    const int max_payload_size = 8000;
+    const int max_payload_size = 2000;
     std::string json = "{\"tools\":[";
     
     bool found_cursor = cursor.empty();
