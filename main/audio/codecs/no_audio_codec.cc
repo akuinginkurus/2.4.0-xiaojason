@@ -72,7 +72,7 @@ NoAudioCodecDuplex::NoAudioCodecDuplex(int input_sample_rate, int output_sample_
     };
     // Speaker: kirim audio mono yang sama ke slot L dan R.
 i2s_std_config_t tx_std_cfg = std_cfg;
-tx_std_cfg.slot_cfg.slot_mode = I2S_SLOT_MODE_STEREO;
+tx_std_cfg.slot_cfg.slot_mode = I2S_SLOT_MODE_MONO;
 tx_std_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;
 
 ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle_, &tx_std_cfg));
