@@ -1,4 +1,3 @@
-
 #include "pocket_oled_display.h"
 
 #include "assets/lang_config.h"
@@ -192,6 +191,14 @@ void PocketOledDisplay::SetStatus(const char* status) {
         return;
     }
 
+    const bool is_standby =
+        std::strcmp(status, Lang::Strings::STANDBY) == 0;
+
+    // Remember the current status.
+    // This prevents SetEmotion("neutral") from undoing sleepy eyes
+    // when Application enters standby.
+    standby_mode_ = is_standby;
+
     // Enter music mode when the existing player reports playback.
     if (Contains(status, "Memutar lagu") ||
         Contains(status, "memutar lagu")) {
@@ -201,7 +208,7 @@ void PocketOledDisplay::SetStatus(const char* status) {
     // returns to standby.
     else if (Contains(status, "Mendengarkan") ||
              Contains(status, "mendengarkan") ||
-             std::strcmp(status, Lang::Strings::STANDBY) == 0) {
+             is_standby) {
         SetMusicMode(false);
     }
 
@@ -226,9 +233,9 @@ void PocketOledDisplay::SetStatus(const char* status) {
         Contains(status, "Đang") ||
         Contains(status, "đang")) {
         SetFaceMode(FaceMode::kThinking);
-    } else if (std::strcmp(
-                   status, Lang::Strings::STANDBY) == 0) {
-        SetFaceMode(FaceMode::kNeutral);
+    } else if (is_standby) {
+        // Sleepy expression while waiting for the next interaction.
+        SetFaceMode(FaceMode::kSleepy);
     }
 
     if (!has_chat_text_ && chat_line_ != nullptr) {
@@ -241,11 +248,23 @@ void PocketOledDisplay::SetEmotion(const char* emotion) {
 
     DisplayLockGuard lock(this);
 
-    // Keep music mode controlled by playback status, not by
-    // incidental emotion updates.
-    if (!music_mode_) {
-        SetFaceMode(FaceModeFromEmotion(emotion));
+    // Music playback keeps its own visualizer.
+    if (music_mode_) {
+        return;
     }
+
+    // Application sends "neutral" immediately after setting STANDBY.
+    // Keep the sleepy expression during standby instead of opening
+    // the eyes again.
+    if (standby_mode_ &&
+        (emotion == nullptr ||
+         std::strcmp(emotion, "neutral") == 0)) {
+        SetFaceMode(FaceMode::kSleepy);
+        return;
+    }
+
+    // Any other emotion follows the original emotion mapping.
+    SetFaceMode(FaceModeFromEmotion(emotion));
 }
 
 void PocketOledDisplay::SetChatMessage(
@@ -398,6 +417,7 @@ void PocketOledDisplay::UpdateAnimationFrame() {
     if (blink) {
         target_height = 2;
     } else if (face_mode_ == FaceMode::kSleepy) {
+        // Half-closed sleepy eyes.
         target_height = 7;
     } else if (face_mode_ == FaceMode::kListening) {
         target_height = eye_height + 3;
