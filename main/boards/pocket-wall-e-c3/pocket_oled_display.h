@@ -1,4 +1,3 @@
-
 #ifndef POCKET_OLED_DISPLAY_H
 #define POCKET_OLED_DISPLAY_H
 
@@ -69,6 +68,9 @@ private:
 
     bool has_chat_text_ = false;
     bool music_mode_ = false;
+
+    // Keeps sleepy eyes active while the device is in standby.
+    bool standby_mode_ = false;
 
     static void AnimationTimerCallback(lv_timer_t* timer);
 
