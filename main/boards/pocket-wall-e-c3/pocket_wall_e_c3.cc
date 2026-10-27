@@ -127,6 +127,7 @@ private:
     Display* display_ = nullptr;
     Button action_button_;
     MotorController* motor_controller_ = nullptr;
+    JoystickEspNow* joystick_espnow_ = nullptr;
 
 
     void InitializeDisplayI2c() {
@@ -215,6 +216,7 @@ public:
         InitializeButton();
         motor_controller_ = new MotorController(MOTOR_LEFT_IN1_PIN, MOTOR_LEFT_IN2_PIN,
                                                 MOTOR_RIGHT_IN1_PIN, MOTOR_RIGHT_IN2_PIN);
+        joystick_espnow_ = new JoystickEspNow(motor_controller_);
         ESP_LOGI(TAG, "Pocket Wall-E C3 initialized");
     }
 
