@@ -5,12 +5,15 @@
 
 #include <algorithm>
 #include <cstring>
+#include <initializer_list>
 
 namespace {
 
 constexpr uint32_t kAnimationPeriodMs = 40;
 constexpr uint32_t kMusicUpdatePeriodMs = 75;
-constexpr int kSleepyEyeOffsetY = 8;
+
+// Mata standby lebih dekat ke jam.
+constexpr int kSleepyEyeOffsetY = 14;
 
 void PrepareShape(lv_obj_t* object) {
     lv_obj_remove_style_all(object);
@@ -74,7 +77,7 @@ void PocketOledDisplay::SetupUI() {
 
     auto* screen = lv_screen_active();
 
-    // Face area: top 48 pixels of the OLED.
+    // Area mata: 128 x 48 piksel.
     face_layer_ = lv_obj_create(screen);
     PrepareShape(face_layer_);
 
@@ -98,7 +101,7 @@ void PocketOledDisplay::SetupUI() {
     left_bottom_lid_ = lv_obj_create(face_layer_);
     right_bottom_lid_ = lv_obj_create(face_layer_);
 
-    // Normal eyes.
+    // Mata normal.
     for (auto* eye : {left_eye_, right_eye_}) {
         PrepareShape(eye);
 
@@ -110,7 +113,7 @@ void PocketOledDisplay::SetupUI() {
             eye, 8, 0);
     }
 
-    // Nine music visualizer bars.
+    // Sembilan bar visualizer musik.
     for (int i = 0; i < kMusicBarCount; ++i) {
         music_bars_[i] = lv_obj_create(face_layer_);
 
@@ -130,7 +133,7 @@ void PocketOledDisplay::SetupUI() {
         music_targets_[i] = 5;
     }
 
-    // Eyelids.
+    // Kelopak mata.
     for (auto* lid : {
              left_top_lid_,
              right_top_lid_,
@@ -149,8 +152,7 @@ void PocketOledDisplay::SetupUI() {
             lid, LV_OBJ_FLAG_HIDDEN);
     }
 
-    // Bottom line remains unchanged:
-    // status and song-duration text stay at y = 48.
+    // Area bawah tetap pada y = 48.
     chat_line_ = lv_label_create(screen);
 
     lv_obj_set_pos(chat_line_, 0, 48);
@@ -195,10 +197,8 @@ void PocketOledDisplay::SetStatus(const char* status) {
     const bool is_standby =
         std::strcmp(status, Lang::Strings::STANDBY) == 0;
 
-    // Remember whether the device is in standby.
     standby_mode_ = is_standby;
 
-    // Enable music visualizer for music playback.
     if (Contains(status, "Memutar lagu") ||
         Contains(status, "memutar lagu")) {
         SetMusicMode(true);
@@ -209,7 +209,6 @@ void PocketOledDisplay::SetStatus(const char* status) {
     }
 
     if (music_mode_) {
-        // Preserve existing bottom-line behavior.
         if (!has_chat_text_ && chat_line_ != nullptr) {
             lv_label_set_text(chat_line_, status);
         }
@@ -246,7 +245,7 @@ void PocketOledDisplay::SetEmotion(const char* emotion) {
         return;
     }
 
-    // Keep sleepy eyes when Application sends neutral in standby.
+    // Pertahankan mata tidur saat standby menerima neutral.
     if (standby_mode_ &&
         (emotion == nullptr ||
          std::strcmp(emotion, "neutral") == 0)) {
@@ -330,7 +329,7 @@ void PocketOledDisplay::UpdateAnimationFrame() {
 
     ++animation_tick_;
 
-    // During music playback, animate only the visualizer.
+    // Saat musik dimainkan, hanya visualizer yang bergerak.
     if (music_mode_) {
         UpdateMusicVisualizer();
         return;
@@ -394,6 +393,12 @@ void PocketOledDisplay::UpdateAnimationFrame() {
         face_mode_ == FaceMode::kHappy) {
         target_look_x_ = 0;
         target_look_y_ = 0;
+    } else if (face_mode_ == FaceMode::kSad) {
+        target_look_x_ = 0;
+        target_look_y_ = 2;
+    } else if (face_mode_ == FaceMode::kSleepy) {
+        target_look_x_ = 0;
+        target_look_y_ = 0;
     }
 
     current_look_x_ =
@@ -432,7 +437,7 @@ void PocketOledDisplay::UpdateAnimationFrame() {
     const int right_x =
         left_x + eye_width + eye_gap;
 
-    // Only sleepy eyes are shifted downward toward the clock.
+    // Hanya mata standby yang digeser ke arah jam.
     const int sleepy_offset =
         face_mode_ == FaceMode::kSleepy
             ? kSleepyEyeOffsetY
@@ -464,13 +469,15 @@ void PocketOledDisplay::UpdateAnimationFrame() {
 
     constexpr int lid_height = 10;
 
+    // Ekspresi sedih dan marah menggunakan kelopak miring.
     if (!blink &&
         (face_mode_ == FaceMode::kAngry ||
          face_mode_ == FaceMode::kSad)) {
         const bool angry =
             face_mode_ == FaceMode::kAngry;
 
-        const int lid_width = eye_width + 8;
+        const int lid_width =
+            eye_width + 8;
 
         lv_obj_remove_flag(
             left_top_lid_, LV_OBJ_FLAG_HIDDEN);
@@ -487,12 +494,24 @@ void PocketOledDisplay::UpdateAnimationFrame() {
         lv_obj_set_size(
             right_top_lid_, lid_width, lid_height);
 
-        lv_obj_set_style_transform_rotation(
-            left_top_lid_, angry ? -140 : 140, 0);
-        lv_obj_set_style_transform_rotation(
-            right_top_lid_, angry ? 140 : -140, 0);
+        // LVGL menggunakan satuan 0,1 derajat.
+        // Marah lebih tajam, sedih lebih landai.
+        if (angry) {
+            lv_obj_set_style_transform_rotation(
+                left_top_lid_, -180, 0);
+
+            lv_obj_set_style_transform_rotation(
+                right_top_lid_, 180, 0);
+        } else {
+            lv_obj_set_style_transform_rotation(
+                left_top_lid_, 100, 0);
+
+            lv_obj_set_style_transform_rotation(
+                right_top_lid_, -100, 0);
+        }
     }
 
+    // Kelopak bawah untuk ekspresi senang dan berbicara.
     if (!blink &&
         (face_mode_ == FaceMode::kHappy ||
          face_mode_ == FaceMode::kSpeaking)) {
@@ -538,7 +557,7 @@ void PocketOledDisplay::SetMusicMode(bool enabled) {
         return;
     }
 
-    // Hide normal eyes and eyelids during music playback.
+    // Sembunyikan mata normal saat musik dimainkan.
     for (auto* object : {
              left_eye_,
              right_eye_,
@@ -557,7 +576,7 @@ void PocketOledDisplay::SetMusicMode(bool enabled) {
         }
     }
 
-    // Show or hide equalizer bars.
+    // Tampilkan atau sembunyikan bar equalizer.
     for (auto* bar : music_bars_) {
         if (bar == nullptr) {
             continue;
