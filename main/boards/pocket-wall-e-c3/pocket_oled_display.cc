@@ -469,7 +469,7 @@ void PocketOledDisplay::UpdateAnimationFrame() {
 
     constexpr int lid_height = 10;
 
-    // Ekspresi sedih dan marah menggunakan kelopak miring.
+    // Ekspresi Sedih dan Marah.
     if (!blink &&
         (face_mode_ == FaceMode::kAngry ||
          face_mode_ == FaceMode::kSad)) {
@@ -494,20 +494,23 @@ void PocketOledDisplay::UpdateAnimationFrame() {
         lv_obj_set_size(
             right_top_lid_, lid_width, lid_height);
 
-        // LVGL menggunakan satuan 0,1 derajat.
-        // Marah lebih tajam, sedih lebih landai.
         if (angry) {
+            // Marah: alis miring tajam.
+            // LVGL menggunakan satuan 0,1 derajat.
             lv_obj_set_style_transform_rotation(
                 left_top_lid_, -180, 0);
 
             lv_obj_set_style_transform_rotation(
                 right_top_lid_, 180, 0);
         } else {
+            // Sedih: kelopak atas lurus.
+            // Tidak diputar agar tidak membentuk
+            // garis diagonal yang memotong mata.
             lv_obj_set_style_transform_rotation(
-                left_top_lid_, 100, 0);
+                left_top_lid_, 0, 0);
 
             lv_obj_set_style_transform_rotation(
-                right_top_lid_, -100, 0);
+                right_top_lid_, 0, 0);
         }
     }
 
