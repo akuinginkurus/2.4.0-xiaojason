@@ -17,6 +17,8 @@
 #include <cstdint>
 #include <climits>
 #include "motor_controller.h"
+#include "joystick_espnow.h"
+
 
 #define TAG "PocketWallEC3"
 
