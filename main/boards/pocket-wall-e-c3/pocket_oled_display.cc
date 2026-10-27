@@ -1,3 +1,4 @@
+
 #include "pocket_oled_display.h"
 
 #include "assets/lang_config.h"
@@ -9,6 +10,7 @@ namespace {
 
 constexpr uint32_t kAnimationPeriodMs = 40;
 constexpr uint32_t kMusicUpdatePeriodMs = 75;
+constexpr int kSleepyEyeOffsetY = 8;
 
 void PrepareShape(lv_obj_t* object) {
     lv_obj_remove_style_all(object);
@@ -72,7 +74,7 @@ void PocketOledDisplay::SetupUI() {
 
     auto* screen = lv_screen_active();
 
-    // Face area: only the top 48 pixels of the OLED.
+    // Face area: top 48 pixels of the OLED.
     face_layer_ = lv_obj_create(screen);
     PrepareShape(face_layer_);
 
@@ -108,8 +110,7 @@ void PocketOledDisplay::SetupUI() {
             eye, 8, 0);
     }
 
-    // Create the nine equalizer bars.
-    // They remain hidden until music playback begins.
+    // Nine music visualizer bars.
     for (int i = 0; i < kMusicBarCount; ++i) {
         music_bars_[i] = lv_obj_create(face_layer_);
 
@@ -129,7 +130,7 @@ void PocketOledDisplay::SetupUI() {
         music_targets_[i] = 5;
     }
 
-    // Eyelids used by the normal face animations.
+    // Eyelids.
     for (auto* lid : {
              left_top_lid_,
              right_top_lid_,
@@ -148,8 +149,8 @@ void PocketOledDisplay::SetupUI() {
             lid, LV_OBJ_FLAG_HIDDEN);
     }
 
-    // Bottom line: intentionally unchanged.
-    // Existing status and song-duration text remain here.
+    // Bottom line remains unchanged:
+    // status and song-duration text stay at y = 48.
     chat_line_ = lv_label_create(screen);
 
     lv_obj_set_pos(chat_line_, 0, 48);
@@ -194,31 +195,25 @@ void PocketOledDisplay::SetStatus(const char* status) {
     const bool is_standby =
         std::strcmp(status, Lang::Strings::STANDBY) == 0;
 
-    // Remember the current status.
-    // This prevents SetEmotion("neutral") from undoing sleepy eyes
-    // when Application enters standby.
+    // Remember whether the device is in standby.
     standby_mode_ = is_standby;
 
-    // Enter music mode when the existing player reports playback.
+    // Enable music visualizer for music playback.
     if (Contains(status, "Memutar lagu") ||
         Contains(status, "memutar lagu")) {
         SetMusicMode(true);
-    }
-    // Leave music mode when normal listening resumes or playback
-    // returns to standby.
-    else if (Contains(status, "Mendengarkan") ||
-             Contains(status, "mendengarkan") ||
-             is_standby) {
+    } else if (Contains(status, "Mendengarkan") ||
+               Contains(status, "mendengarkan") ||
+               is_standby) {
         SetMusicMode(false);
     }
 
     if (music_mode_) {
-        // Preserve the existing bottom-line status/duration behavior.
+        // Preserve existing bottom-line behavior.
         if (!has_chat_text_ && chat_line_ != nullptr) {
             lv_label_set_text(chat_line_, status);
         }
 
-        // Do not let ordinary face animations overwrite the spectrum.
         return;
     }
 
@@ -234,7 +229,6 @@ void PocketOledDisplay::SetStatus(const char* status) {
         Contains(status, "đang")) {
         SetFaceMode(FaceMode::kThinking);
     } else if (is_standby) {
-        // Sleepy expression while waiting for the next interaction.
         SetFaceMode(FaceMode::kSleepy);
     }
 
@@ -248,14 +242,11 @@ void PocketOledDisplay::SetEmotion(const char* emotion) {
 
     DisplayLockGuard lock(this);
 
-    // Music playback keeps its own visualizer.
     if (music_mode_) {
         return;
     }
 
-    // Application sends "neutral" immediately after setting STANDBY.
-    // Keep the sleepy expression during standby instead of opening
-    // the eyes again.
+    // Keep sleepy eyes when Application sends neutral in standby.
     if (standby_mode_ &&
         (emotion == nullptr ||
          std::strcmp(emotion, "neutral") == 0)) {
@@ -263,7 +254,6 @@ void PocketOledDisplay::SetEmotion(const char* emotion) {
         return;
     }
 
-    // Any other emotion follows the original emotion mapping.
     SetFaceMode(FaceModeFromEmotion(emotion));
 }
 
@@ -340,7 +330,7 @@ void PocketOledDisplay::UpdateAnimationFrame() {
 
     ++animation_tick_;
 
-    // While music is playing, animate only the equalizer.
+    // During music playback, animate only the visualizer.
     if (music_mode_) {
         UpdateMusicVisualizer();
         return;
@@ -417,7 +407,6 @@ void PocketOledDisplay::UpdateAnimationFrame() {
     if (blink) {
         target_height = 2;
     } else if (face_mode_ == FaceMode::kSleepy) {
-        // Half-closed sleepy eyes.
         target_height = 7;
     } else if (face_mode_ == FaceMode::kListening) {
         target_height = eye_height + 3;
@@ -443,11 +432,18 @@ void PocketOledDisplay::UpdateAnimationFrame() {
     const int right_x =
         left_x + eye_width + eye_gap;
 
+    // Only sleepy eyes are shifted downward toward the clock.
+    const int sleepy_offset =
+        face_mode_ == FaceMode::kSleepy
+            ? kSleepyEyeOffsetY
+            : 0;
+
     const int eye_y =
         base_y +
         (eye_height - current_eye_height_) / 2 +
         current_look_y_ +
-        animation_y;
+        animation_y +
+        sleepy_offset;
 
     lv_obj_set_pos(left_eye_, left_x, eye_y);
     lv_obj_set_size(
@@ -561,7 +557,7 @@ void PocketOledDisplay::SetMusicMode(bool enabled) {
         }
     }
 
-    // Show or hide the equalizer bars.
+    // Show or hide equalizer bars.
     for (auto* bar : music_bars_) {
         if (bar == nullptr) {
             continue;
@@ -584,7 +580,6 @@ void PocketOledDisplay::SetMusicMode(bool enabled) {
 
         UpdateMusicVisualizer();
     } else {
-        // Restore the original face animation.
         UpdateAnimationFrame();
     }
 }
@@ -596,7 +591,6 @@ void PocketOledDisplay::UpdateMusicVisualizer() {
 
     const uint32_t now = lv_tick_get();
 
-    // Choose new equalizer heights every 75 ms.
     if (music_last_update_ == 0 ||
         now - music_last_update_ >= kMusicUpdatePeriodMs) {
         music_last_update_ = now;
@@ -608,16 +602,13 @@ void PocketOledDisplay::UpdateMusicVisualizer() {
             int target = 5;
 
             if (i >= 3 && i <= 5) {
-                // Middle bars.
                 target =
                     6 + static_cast<int>(NextRandom() % 18);
             } else if (i <= 2) {
-                // Left-side bars.
                 target = beat
                     ? 16 + static_cast<int>(NextRandom() % 12)
                     : 5 + static_cast<int>(NextRandom() % 9);
             } else {
-                // Right-side bars.
                 target =
                     4 + static_cast<int>(NextRandom() % 15);
             }
@@ -638,7 +629,6 @@ void PocketOledDisplay::UpdateMusicVisualizer() {
             continue;
         }
 
-        // Smooth movement instead of instantly jumping.
         if (music_heights_[i] < music_targets_[i]) {
             music_heights_[i] =
                 std::min(
