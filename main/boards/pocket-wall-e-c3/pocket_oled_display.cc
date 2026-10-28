@@ -467,54 +467,76 @@ void PocketOledDisplay::UpdateAnimationFrame() {
         lv_obj_set_style_transform_rotation(lid, 0, 0);
     }
 
-    constexpr int lid_height = 10;
-
-    // Ekspresi Sedih dan Marah.
+    // =====================================================
+    // PERUBAHAN KHUSUS SAD / ANGRY
+    // Penutup hitam membentuk tepi mata miring.
+    // Ujung membulat; tidak ada objek alis terpisah.
+    // =====================================================
     if (!blink &&
         (face_mode_ == FaceMode::kAngry ||
          face_mode_ == FaceMode::kSad)) {
+
         const bool angry =
             face_mode_ == FaceMode::kAngry;
 
-        const int lid_width =
-            eye_width + 8;
+        // Penutup dibuat cukup tinggi agar menutupi bagian
+        // atas mata, sehingga yang terlihat adalah tepi
+        // mata diagonal, bukan garis hitam seperti alis.
+        constexpr int cover_width = eye_width + 12;
+        constexpr int cover_height = 25;
+
+        // Rotasi LVGL memakai satuan 0,1 derajat.
+        // 140 = 14 derajat, dengan ujung tetap membulat.
+        const int angle = angry ? 140 : -140;
+
+        lv_obj_set_style_radius(
+            left_top_lid_, 6, 0);
+        lv_obj_set_style_radius(
+            right_top_lid_, 6, 0);
+
+        lv_obj_set_size(
+            left_top_lid_, cover_width, cover_height);
+        lv_obj_set_size(
+            right_top_lid_, cover_width, cover_height);
+
+        // Angry:
+        // tepi mata kiri turun ke arah tengah;
+        // tepi mata kanan turun ke arah tengah.
+        //
+        // Sad menggunakan arah kemiringan sebaliknya.
+        lv_obj_set_pos(
+            left_top_lid_,
+            left_x - 6,
+            eye_y - 19);
+
+        lv_obj_set_pos(
+            right_top_lid_,
+            right_x - 6,
+            eye_y - 19);
+
+        if (angry) {
+            lv_obj_set_style_transform_rotation(
+                left_top_lid_, angle, 0);
+
+            lv_obj_set_style_transform_rotation(
+                right_top_lid_, -angle, 0);
+        } else {
+            lv_obj_set_style_transform_rotation(
+                left_top_lid_, -angle, 0);
+
+            lv_obj_set_style_transform_rotation(
+                right_top_lid_, angle, 0);
+        }
 
         lv_obj_remove_flag(
             left_top_lid_, LV_OBJ_FLAG_HIDDEN);
+
         lv_obj_remove_flag(
             right_top_lid_, LV_OBJ_FLAG_HIDDEN);
-
-        lv_obj_set_pos(
-            left_top_lid_, left_x - 4, eye_y - 2);
-        lv_obj_set_size(
-            left_top_lid_, lid_width, lid_height);
-
-        lv_obj_set_pos(
-            right_top_lid_, right_x - 4, eye_y - 2);
-        lv_obj_set_size(
-            right_top_lid_, lid_width, lid_height);
-
-        if (angry) {
-            // Marah: alis miring tajam.
-            // LVGL menggunakan satuan 0,1 derajat.
-            lv_obj_set_style_transform_rotation(
-                left_top_lid_, -180, 0);
-
-            lv_obj_set_style_transform_rotation(
-                right_top_lid_, 180, 0);
-        } else {
-            // Sedih: kelopak atas lurus.
-            // Tidak diputar agar tidak membentuk
-            // garis diagonal yang memotong mata.
-            lv_obj_set_style_transform_rotation(
-                left_top_lid_, 0, 0);
-
-            lv_obj_set_style_transform_rotation(
-                right_top_lid_, 0, 0);
-        }
     }
 
     // Kelopak bawah untuk ekspresi senang dan berbicara.
+    // BAGIAN INI TETAP SAMA SEPERTI KODE ASLI.
     if (!blink &&
         (face_mode_ == FaceMode::kHappy ||
          face_mode_ == FaceMode::kSpeaking)) {
