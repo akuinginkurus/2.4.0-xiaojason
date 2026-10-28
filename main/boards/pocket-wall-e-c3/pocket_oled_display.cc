@@ -12,6 +12,10 @@ constexpr uint32_t kAnimationPeriodMs = 40;
 constexpr uint32_t kMusicUpdatePeriodMs = 75;
 constexpr int kSleepyEyeOffsetY = 14;
 
+// Mode tes: 12 detik pertama setelah boot wajah bergantian
+// angry -> sad -> normal. Ubah ke false bila sudah benar.
+constexpr bool kFaceDemo = true;
+
 // Bentuk mata ANGRY / SAD: badan mata (rounded) dipotong miring
 // oleh potongan persegi hitam bertingkat halus, tanpa rotation.
 constexpr int kSlantDrop = 8;        // selisih tinggi sisi luar vs dalam
@@ -339,6 +343,13 @@ void PocketOledDisplay::UpdateAnimationFrame() {
     if (music_mode_) {
         UpdateMusicVisualizer();
         return;
+    }
+
+    if (kFaceDemo && animation_tick_ < 300) {
+        const uint32_t phase = (animation_tick_ / 75) % 4;
+        face_mode_ = phase == 0 ? FaceMode::kAngry
+                   : phase == 1 ? FaceMode::kSad
+                                : FaceMode::kNeutral;
     }
 
     constexpr int face_width = 128;
