@@ -1,3 +1,4 @@
+
 #include "pocket_oled_display.h"
 
 #include "assets/lang_config.h"
@@ -430,54 +431,40 @@ void PocketOledDisplay::UpdateAnimationFrame() {
         lv_obj_add_flag(lid, LV_OBJ_FLAG_HIDDEN);
     }
 
-    // Perubahan khusus Sad dan Angry.
-    // Tanpa rotation dan tanpa objek alis terpisah.
+    // Ekspresi khusus SAD dan ANGRY.
+    // Tidak memakai rotation atau alis terpisah.
     if (!blink &&
         (face_mode_ == FaceMode::kAngry ||
          face_mode_ == FaceMode::kSad)) {
 
-        const bool angry = face_mode_ == FaceMode::kAngry;
+        const bool angry = (face_mode_ == FaceMode::kAngry);
+        constexpr int cover_width = 25;
+        constexpr int cover_height = 18;
 
         lv_obj_set_style_radius(left_top_lid_, 7, 0);
         lv_obj_set_style_radius(right_top_lid_, 7, 0);
 
         if (angry) {
-            constexpr int cover_w = 30;
-            constexpr int cover_h = 17;
+            // Angry: penutup lebih ke sisi dalam kedua mata.
+            lv_obj_set_pos(left_top_lid_, left_x + 18, eye_y - 1);
+            lv_obj_set_size(left_top_lid_, cover_width, cover_height);
 
-            lv_obj_set_pos(
-                left_top_lid_, left_x - 3, eye_y - 2);
-            lv_obj_set_size(
-                left_top_lid_, cover_w, cover_h);
-
-            lv_obj_set_pos(
-                right_top_lid_,
-                right_x + eye_width - cover_w + 3,
-                eye_y - 2);
-            lv_obj_set_size(
-                right_top_lid_, cover_w, cover_h);
+            lv_obj_set_pos(right_top_lid_, right_x + 1, eye_y - 1);
+            lv_obj_set_size(right_top_lid_, cover_width, cover_height);
         } else {
-            constexpr int cover_w = 29;
-            constexpr int cover_h = 15;
+            // Sad: posisi penutup berbeda dari ekspresi Angry.
+            lv_obj_set_pos(left_top_lid_, left_x + 8, eye_y - 1);
+            lv_obj_set_size(left_top_lid_, cover_width, cover_height);
 
-            lv_obj_set_pos(
-                left_top_lid_,
-                left_x + eye_width - cover_w + 2,
-                eye_y - 2);
-            lv_obj_set_size(
-                left_top_lid_, cover_w, cover_h);
-
-            lv_obj_set_pos(
-                right_top_lid_, right_x - 2, eye_y - 2);
-            lv_obj_set_size(
-                right_top_lid_, cover_w, cover_h);
+            lv_obj_set_pos(right_top_lid_, right_x + 11, eye_y - 1);
+            lv_obj_set_size(right_top_lid_, cover_width, cover_height);
         }
 
         lv_obj_remove_flag(left_top_lid_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(right_top_lid_, LV_OBJ_FLAG_HIDDEN);
     }
 
-    // Ekspresi Happy dan Speaking tidak diubah.
+    // Ekspresi Happy dan Speaking tetap dipertahankan.
     if (!blink &&
         (face_mode_ == FaceMode::kHappy ||
          face_mode_ == FaceMode::kSpeaking)) {
