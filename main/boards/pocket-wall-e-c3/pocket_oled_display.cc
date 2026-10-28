@@ -431,39 +431,59 @@ void PocketOledDisplay::UpdateAnimationFrame() {
         lv_obj_add_flag(lid, LV_OBJ_FLAG_HIDDEN);
     }
 
-    // Ekspresi khusus SAD dan ANGRY.
-    // Tidak memakai rotation atau alis terpisah.
+    // SAD dan ANGRY: bentuk mata bertingkat menggunakan LVGL.
+    // Tanpa rotation dan tanpa alis terpisah.
     if (!blink &&
         (face_mode_ == FaceMode::kAngry ||
          face_mode_ == FaceMode::kSad)) {
 
-        const bool angry = (face_mode_ == FaceMode::kAngry);
-        constexpr int cover_width = 25;
-        constexpr int cover_height = 18;
+        const bool angry = face_mode_ == FaceMode::kAngry;
 
-        lv_obj_set_style_radius(left_top_lid_, 7, 0);
-        lv_obj_set_style_radius(right_top_lid_, 7, 0);
+        constexpr int full_cover_height = 11;
+        constexpr int step_width = eye_width / 2;
+        constexpr int step_height = 10;
 
-        if (angry) {
-            // Angry: penutup lebih ke sisi dalam kedua mata.
-            lv_obj_set_pos(left_top_lid_, left_x + 18, eye_y - 1);
-            lv_obj_set_size(left_top_lid_, cover_width, cover_height);
-
-            lv_obj_set_pos(right_top_lid_, right_x + 1, eye_y - 1);
-            lv_obj_set_size(right_top_lid_, cover_width, cover_height);
-        } else {
-            // Sad: posisi penutup berbeda dari ekspresi Angry.
-            lv_obj_set_pos(left_top_lid_, left_x + 8, eye_y - 1);
-            lv_obj_set_size(left_top_lid_, cover_width, cover_height);
-
-            lv_obj_set_pos(right_top_lid_, right_x + 11, eye_y - 1);
-            lv_obj_set_size(right_top_lid_, cover_width, cover_height);
+        for (auto* lid : {
+                 left_top_lid_, right_top_lid_,
+                 left_bottom_lid_, right_bottom_lid_}) {
+            lv_obj_set_style_radius(lid, 3, 0);
         }
+
+        // Penutup bagian atas kedua mata.
+        lv_obj_set_pos(left_top_lid_, left_x, eye_y);
+        lv_obj_set_size(
+            left_top_lid_, eye_width, full_cover_height);
+
+        lv_obj_set_pos(right_top_lid_, right_x, eye_y);
+        lv_obj_set_size(
+            right_top_lid_, eye_width, full_cover_height);
+
+        // Angry: bagian dalam mata tertutup lebih rendah.
+        // Sad: bagian luar mata tertutup lebih rendah.
+        const int left_step_x =
+            left_x + (angry ? eye_width - step_width : 0);
+
+        const int right_step_x =
+            right_x + (angry ? 0 : eye_width - step_width);
+
+        lv_obj_set_pos(
+            left_bottom_lid_, left_step_x,
+            eye_y + full_cover_height - 1);
+        lv_obj_set_size(
+            left_bottom_lid_, step_width, step_height);
+
+        lv_obj_set_pos(
+            right_bottom_lid_, right_step_x,
+            eye_y + full_cover_height - 1);
+        lv_obj_set_size(
+            right_bottom_lid_, step_width, step_height);
 
         lv_obj_remove_flag(left_top_lid_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(right_top_lid_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(left_bottom_lid_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(right_bottom_lid_, LV_OBJ_FLAG_HIDDEN);
     }
-
+    
     // Ekspresi Happy dan Speaking tetap dipertahankan.
     if (!blink &&
         (face_mode_ == FaceMode::kHappy ||
