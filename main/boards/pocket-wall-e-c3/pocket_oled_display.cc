@@ -1,4 +1,3 @@
-
 #include "pocket_oled_display.h"
 
 #include "assets/lang_config.h"
@@ -12,6 +11,21 @@ namespace {
 constexpr uint32_t kAnimationPeriodMs = 40;
 constexpr uint32_t kMusicUpdatePeriodMs = 75;
 constexpr int kSleepyEyeOffsetY = 14;
+
+// Bentuk mata ANGRY / SAD: badan mata (rounded) dipotong miring
+// oleh garis tebal berwarna hitam (lv_line), tanpa rotation.
+constexpr int kSlantDrop = 8;        // selisih tinggi sisi luar vs dalam
+constexpr int kSlantCoverWidth = 20; // ketebalan garis penutup
+constexpr int kSlantPad = 3;         // garis dibuat lebih lebar dari mata
+constexpr int kSlantBodyExtra = 9;   // badan mata dinaikkan agar sudut atas
+                                     // yang membulat tersembunyi di balik garis
+constexpr int kAngryEyeHeight = 28;
+constexpr int kSadEyeHeight = 24;
+
+lv_obj_t* g_left_slant = nullptr;
+lv_obj_t* g_right_slant = nullptr;
+lv_point_precise_t g_left_slant_points[2];
+lv_point_precise_t g_right_slant_points[2];
 
 void PrepareShape(lv_obj_t* object) {
     lv_obj_remove_style_all(object);
@@ -28,17 +42,39 @@ int Ease(int current, int target) {
     if (current == target) {
         return current;
     }
-
     const int delta = target - current;
-
     if (delta > 0) {
         return current + std::max(1, delta / 3);
     }
-
     return current + std::min(-1, delta / 3);
 }
 
-}  // namespace
+// Pasang garis penutup miring di atas satu mata.
+// top_y     : y tepi atas mata di sisi yang paling tinggi
+// left_high : true bila sisi kiri mata yang lebih tinggi
+void ApplySlant(
+    lv_obj_t* line,
+    lv_point_precise_t* points,
+    int eye_x,
+    int eye_w,
+    int top_y,
+    bool left_high) {
+    if (line == nullptr) {
+        return;
+    }
+    points[0].x = 0;
+    points[0].y = left_high ? 0 : kSlantDrop;
+    points[1].x = eye_w + kSlantPad * 2;
+    points[1].y = left_high ? kSlantDrop : 0;
+    lv_line_set_points(line, points, 2);
+    lv_obj_set_pos(
+        line,
+        eye_x - kSlantPad,
+        top_y - kSlantCoverWidth / 2);
+    lv_obj_remove_flag(line, LV_OBJ_FLAG_HIDDEN);
+}
+
+} // namespace
 
 PocketOledDisplay::PocketOledDisplay(
     esp_lcd_panel_io_handle_t panel_io,
@@ -56,16 +92,17 @@ PocketOledDisplay::~PocketOledDisplay() {
         lv_timer_delete(animation_timer_);
         animation_timer_ = nullptr;
     }
-
     if (chat_line_ != nullptr) {
         lv_obj_delete(chat_line_);
         chat_line_ = nullptr;
     }
-
     if (face_layer_ != nullptr) {
         lv_obj_delete(face_layer_);
         face_layer_ = nullptr;
     }
+    // Garis miring adalah anak face_layer_, ikut terhapus.
+    g_left_slant = nullptr;
+    g_right_slant = nullptr;
 }
 
 void PocketOledDisplay::SetupUI() {
@@ -77,48 +114,33 @@ void PocketOledDisplay::SetupUI() {
 
     face_layer_ = lv_obj_create(screen);
     PrepareShape(face_layer_);
-
-    lv_obj_set_style_bg_color(
-        face_layer_, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(
-        face_layer_, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(face_layer_, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(face_layer_, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(face_layer_, 0, 0);
     lv_obj_set_style_radius(face_layer_, 0, 0);
     lv_obj_set_style_pad_all(face_layer_, 0, 0);
 
     left_eye_ = lv_obj_create(face_layer_);
     right_eye_ = lv_obj_create(face_layer_);
-
     left_top_lid_ = lv_obj_create(face_layer_);
     right_top_lid_ = lv_obj_create(face_layer_);
-
     left_bottom_lid_ = lv_obj_create(face_layer_);
     right_bottom_lid_ = lv_obj_create(face_layer_);
 
     for (auto* eye : {left_eye_, right_eye_}) {
         PrepareShape(eye);
-
-        lv_obj_set_style_bg_color(
-            eye, lv_color_white(), 0);
-        lv_obj_set_style_bg_opa(
-            eye, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(eye, lv_color_white(), 0);
+        lv_obj_set_style_bg_opa(eye, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(eye, 8, 0);
     }
 
     for (int i = 0; i < kMusicBarCount; ++i) {
         music_bars_[i] = lv_obj_create(face_layer_);
-
         PrepareShape(music_bars_[i]);
-
-        lv_obj_set_style_bg_color(
-            music_bars_[i], lv_color_white(), 0);
-        lv_obj_set_style_bg_opa(
-            music_bars_[i], LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(music_bars_[i], lv_color_white(), 0);
+        lv_obj_set_style_bg_opa(music_bars_[i], LV_OPA_COVER, 0);
         lv_obj_set_style_radius(music_bars_[i], 2, 0);
-
-        lv_obj_add_flag(
-            music_bars_[i], LV_OBJ_FLAG_HIDDEN);
-
+        lv_obj_add_flag(music_bars_[i], LV_OBJ_FLAG_HIDDEN);
         music_heights_[i] = 5;
         music_targets_[i] = 5;
     }
@@ -129,34 +151,34 @@ void PocketOledDisplay::SetupUI() {
              left_bottom_lid_,
              right_bottom_lid_}) {
         PrepareShape(lid);
-
-        lv_obj_set_style_bg_color(
-            lid, lv_color_black(), 0);
-        lv_obj_set_style_bg_opa(
-            lid, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(lid, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(lid, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(lid, 6, 0);
-
         lv_obj_add_flag(lid, LV_OBJ_FLAG_HIDDEN);
     }
 
-    chat_line_ = lv_label_create(screen);
+    // Garis penutup miring untuk ekspresi ANGRY / SAD.
+    g_left_slant = lv_line_create(face_layer_);
+    g_right_slant = lv_line_create(face_layer_);
+    for (auto* line : {g_left_slant, g_right_slant}) {
+        PrepareShape(line);
+        lv_obj_set_style_line_width(line, kSlantCoverWidth, 0);
+        lv_obj_set_style_line_color(line, lv_color_black(), 0);
+        lv_obj_set_style_line_opa(line, LV_OPA_COVER, 0);
+        lv_obj_set_style_line_rounded(line, false, 0);
+        lv_obj_add_flag(line, LV_OBJ_FLAG_HIDDEN);
+    }
 
+    chat_line_ = lv_label_create(screen);
     lv_obj_set_pos(chat_line_, 0, 48);
     lv_obj_set_size(chat_line_, 128, 16);
-
-    lv_obj_set_style_bg_color(
-        chat_line_, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(
-        chat_line_, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(
-        chat_line_, lv_color_white(), 0);
-    lv_obj_set_style_text_align(
-        chat_line_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_bg_color(chat_line_, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(chat_line_, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(chat_line_, lv_color_white(), 0);
+    lv_obj_set_style_text_align(chat_line_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_left(chat_line_, 2, 0);
     lv_obj_set_style_pad_right(chat_line_, 2, 0);
-
-    lv_label_set_long_mode(
-        chat_line_, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_label_set_long_mode(chat_line_, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_label_set_text(chat_line_, "");
 
     ApplyLayout();
@@ -180,7 +202,6 @@ void PocketOledDisplay::SetStatus(const char* status) {
 
     const bool is_standby =
         std::strcmp(status, Lang::Strings::STANDBY) == 0;
-
     standby_mode_ = is_standby;
 
     if (Contains(status, "Memutar lagu") ||
@@ -196,15 +217,12 @@ void PocketOledDisplay::SetStatus(const char* status) {
         if (!has_chat_text_ && chat_line_ != nullptr) {
             lv_label_set_text(chat_line_, status);
         }
-
         return;
     }
 
-    if (std::strcmp(
-            status, Lang::Strings::LISTENING) == 0) {
+    if (std::strcmp(status, Lang::Strings::LISTENING) == 0) {
         SetFaceMode(FaceMode::kListening);
-    } else if (std::strcmp(
-                   status, Lang::Strings::SPEAKING) == 0) {
+    } else if (std::strcmp(status, Lang::Strings::SPEAKING) == 0) {
         SetFaceMode(FaceMode::kSpeaking);
     } else if (
         std::strcmp(status, Lang::Strings::CONNECTING) == 0 ||
@@ -276,7 +294,6 @@ void PocketOledDisplay::AnimationTimerCallback(
     lv_timer_t* timer) {
     auto* display = static_cast<PocketOledDisplay*>(
         lv_timer_get_user_data(timer));
-
     if (display != nullptr) {
         display->UpdateAnimationFrame();
     }
@@ -293,11 +310,9 @@ void PocketOledDisplay::ApplyLayout() {
     lv_obj_set_style_radius(left_eye_, 9, 0);
     lv_obj_set_style_radius(right_eye_, 9, 0);
 
-    current_eye_height_ =
-        std::min(current_eye_height_, 36);
+    current_eye_height_ = std::min(current_eye_height_, 36);
 
     lv_obj_move_foreground(face_layer_);
-
     if (chat_line_ != nullptr) {
         lv_obj_move_foreground(chat_line_);
     }
@@ -343,12 +358,10 @@ void PocketOledDisplay::UpdateAnimationFrame() {
             static_cast<int>(
                 NextRandom() % (max_look_x * 2 + 1)) -
             max_look_x;
-
         target_look_y_ =
             static_cast<int>(
                 NextRandom() % (max_look_y * 2 + 1)) -
             max_look_y;
-
         next_idle_tick_ =
             animation_tick_ + 45 + (NextRandom() % 75);
     }
@@ -380,11 +393,14 @@ void PocketOledDisplay::UpdateAnimationFrame() {
     current_look_y_ = Ease(current_look_y_, target_look_y_);
 
     int target_height = eye_height;
-
     if (blink) {
         target_height = 2;
     } else if (face_mode_ == FaceMode::kSleepy) {
         target_height = 7;
+    } else if (face_mode_ == FaceMode::kAngry) {
+        target_height = kAngryEyeHeight;
+    } else if (face_mode_ == FaceMode::kSad) {
+        target_height = kSadEyeHeight;
     } else if (face_mode_ == FaceMode::kListening) {
         target_height = eye_height + 3;
     }
@@ -393,7 +409,6 @@ void PocketOledDisplay::UpdateAnimationFrame() {
 
     int animation_x = 0;
     int animation_y = 0;
-
     if (face_mode_ == FaceMode::kSpeaking) {
         animation_y =
             ((animation_tick_ / 3) % 2 == 0) ? -1 : 1;
@@ -419,7 +434,6 @@ void PocketOledDisplay::UpdateAnimationFrame() {
 
     lv_obj_set_pos(left_eye_, left_x, eye_y);
     lv_obj_set_size(left_eye_, eye_width, current_eye_height_);
-
     lv_obj_set_pos(right_eye_, right_x, eye_y);
     lv_obj_set_size(right_eye_, eye_width, current_eye_height_);
 
@@ -430,76 +444,54 @@ void PocketOledDisplay::UpdateAnimationFrame() {
              right_bottom_lid_}) {
         lv_obj_add_flag(lid, LV_OBJ_FLAG_HIDDEN);
     }
+    for (auto* line : {g_left_slant, g_right_slant}) {
+        if (line != nullptr) {
+            lv_obj_add_flag(line, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
 
-    // SAD dan ANGRY: bentuk mata bertingkat menggunakan LVGL.
-    // Tanpa rotation dan tanpa alis terpisah.
+    // ANGRY: sisi atas miring turun ke arah tengah (alis marah).
+    // SAD  : sisi atas miring naik ke arah tengah (alis sedih).
+    // Bawah mata tetap membulat. Tanpa rotation.
     if (!blink &&
         (face_mode_ == FaceMode::kAngry ||
          face_mode_ == FaceMode::kSad)) {
-
         const bool angry = face_mode_ == FaceMode::kAngry;
 
-        constexpr int full_cover_height = 11;
-        constexpr int step_width = eye_width / 2;
-        constexpr int step_height = 10;
+        // eye_y = tepi atas sisi tertinggi, bawah = eye_y + tinggi.
+        // Badan mata dinaikkan agar sudut atas yang membulat
+        // tertutup garis miring.
+        const int body_y = eye_y - kSlantBodyExtra;
+        const int body_h = current_eye_height_ + kSlantBodyExtra;
 
-        for (auto* lid : {
-                 left_top_lid_, right_top_lid_,
-                 left_bottom_lid_, right_bottom_lid_}) {
-            lv_obj_set_style_radius(lid, 3, 0);
-        }
+        lv_obj_set_pos(left_eye_, left_x, body_y);
+        lv_obj_set_size(left_eye_, eye_width, body_h);
+        lv_obj_set_pos(right_eye_, right_x, body_y);
+        lv_obj_set_size(right_eye_, eye_width, body_h);
 
-        // Penutup bagian atas kedua mata.
-        lv_obj_set_pos(left_top_lid_, left_x, eye_y);
-        lv_obj_set_size(
-            left_top_lid_, eye_width, full_cover_height);
-
-        lv_obj_set_pos(right_top_lid_, right_x, eye_y);
-        lv_obj_set_size(
-            right_top_lid_, eye_width, full_cover_height);
-
-        // Angry: bagian dalam mata tertutup lebih rendah.
-        // Sad: bagian luar mata tertutup lebih rendah.
-        const int left_step_x =
-            left_x + (angry ? eye_width - step_width : 0);
-
-        const int right_step_x =
-            right_x + (angry ? 0 : eye_width - step_width);
-
-        lv_obj_set_pos(
-            left_bottom_lid_, left_step_x,
-            eye_y + full_cover_height - 1);
-        lv_obj_set_size(
-            left_bottom_lid_, step_width, step_height);
-
-        lv_obj_set_pos(
-            right_bottom_lid_, right_step_x,
-            eye_y + full_cover_height - 1);
-        lv_obj_set_size(
-            right_bottom_lid_, step_width, step_height);
-
-        lv_obj_remove_flag(left_top_lid_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(right_top_lid_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(left_bottom_lid_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(right_bottom_lid_, LV_OBJ_FLAG_HIDDEN);
+        // Angry: sisi luar tinggi (mata kiri = sisi kiri tinggi).
+        // Sad  : sisi dalam tinggi (mata kiri = sisi kanan tinggi).
+        ApplySlant(
+            g_left_slant, g_left_slant_points,
+            left_x, eye_width, eye_y, angry);
+        ApplySlant(
+            g_right_slant, g_right_slant_points,
+            right_x, eye_width, eye_y, !angry);
     }
-    
+
     // Ekspresi Happy dan Speaking tetap dipertahankan.
     if (!blink &&
         (face_mode_ == FaceMode::kHappy ||
          face_mode_ == FaceMode::kSpeaking)) {
         constexpr int cover_height = 17;
 
-        lv_obj_remove_flag(
-            left_bottom_lid_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(
-            right_bottom_lid_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(left_bottom_lid_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(right_bottom_lid_, LV_OBJ_FLAG_HIDDEN);
 
         lv_obj_set_pos(
             left_bottom_lid_,
             left_x - 2,
             eye_y + current_eye_height_ - cover_height / 2);
-
         lv_obj_set_size(
             left_bottom_lid_, eye_width + 4, cover_height);
 
@@ -507,7 +499,6 @@ void PocketOledDisplay::UpdateAnimationFrame() {
             right_bottom_lid_,
             right_x - 2,
             eye_y + current_eye_height_ - cover_height / 2);
-
         lv_obj_set_size(
             right_bottom_lid_, eye_width + 4, cover_height);
     }
@@ -530,11 +521,12 @@ void PocketOledDisplay::SetMusicMode(bool enabled) {
              left_top_lid_,
              right_top_lid_,
              left_bottom_lid_,
-             right_bottom_lid_}) {
+             right_bottom_lid_,
+             g_left_slant,
+             g_right_slant}) {
         if (object == nullptr) {
             continue;
         }
-
         if (enabled) {
             lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
         } else {
@@ -546,7 +538,6 @@ void PocketOledDisplay::SetMusicMode(bool enabled) {
         if (bar == nullptr) {
             continue;
         }
-
         if (enabled) {
             lv_obj_remove_flag(bar, LV_OBJ_FLAG_HIDDEN);
         } else {
@@ -556,12 +547,10 @@ void PocketOledDisplay::SetMusicMode(bool enabled) {
 
     if (enabled) {
         music_last_update_ = 0;
-
         for (int i = 0; i < kMusicBarCount; ++i) {
             music_heights_[i] = 5;
             music_targets_[i] = 5;
         }
-
         UpdateMusicVisualizer();
     } else {
         UpdateAnimationFrame();
@@ -618,8 +607,7 @@ void PocketOledDisplay::UpdateMusicVisualizer() {
                 std::min(
                     music_heights_[i] + 3,
                     music_targets_[i]);
-        } else if (
-            music_heights_[i] > music_targets_[i]) {
+        } else if (music_heights_[i] > music_targets_[i]) {
             music_heights_[i] =
                 std::max(
                     music_heights_[i] - 2,
@@ -692,6 +680,5 @@ PocketOledDisplay::FaceModeFromEmotion(
 uint32_t PocketOledDisplay::NextRandom() {
     random_state_ =
         random_state_ * 1664525U + 1013904223U;
-
     return random_state_;
 }
