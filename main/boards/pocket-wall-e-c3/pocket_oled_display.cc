@@ -3,7 +3,9 @@
 #include "assets/lang_config.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
+#include <string>
 #include <initializer_list>
 
 namespace {
@@ -24,6 +26,57 @@ constexpr int kSlantBodyExtra = 9;   // badan mata dinaikkan agar sudut atas
                                      // yang membulat tersembunyi di balik garis
 constexpr int kAngryEyeHeight = 28;
 constexpr int kSadEyeHeight = 24;
+
+// Ekspresi dari emosi ditahan sebentar supaya tidak langsung ditimpa
+// oleh status Berbicara / Mendengarkan.
+constexpr uint32_t kEmotionHoldMs = 12000;
+uint32_t g_hold_until = 0;
+bool g_hold_active = false;
+bool g_from_emotion = false;
+
+bool HoldActive() {
+    return g_hold_active &&
+           static_cast<int32_t>(g_hold_until - lv_tick_get()) > 0;
+}
+
+// Deteksi emosi dari teks percakapan, untuk kasus ketika server
+// memanggil tool express_emotion tanpa mengirim pesan emosi ke perangkat.
+// 0 = tidak ada, 1 = sedih, 2 = marah
+int DetectEmotionFromText(const char* role, const char* content) {
+    if (role == nullptr || content == nullptr || content[0] == '\0') {
+        return 0;
+    }
+    std::string text(content);
+    for (auto& ch : text) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    auto contains = [&text](const char* word) {
+        return text.find(word) != std::string::npos;
+    };
+
+    if (std::strcmp(role, "user") == 0) {
+        const bool asks =
+            contains("ekspresi") || contains("wajah") ||
+            contains("tunjukkan") || contains("tunjukan");
+        if (asks && contains("sedih")) {
+            return 1;
+        }
+        if (asks && (contains("marah") || contains("kesal"))) {
+            return 2;
+        }
+        return 0;
+    }
+
+    if (std::strcmp(role, "assistant") == 0) {
+        if (contains("hiks") || contains("sedih")) {
+            return 1;
+        }
+        if (contains("marah") || contains("kesal") || contains("grr")) {
+            return 2;
+        }
+    }
+    return 0;
+}
 
 lv_obj_t* g_left_strips[kSlantStrips] = {nullptr};
 lv_obj_t* g_right_strips[kSlantStrips] = {nullptr};
@@ -267,7 +320,22 @@ void PocketOledDisplay::SetEmotion(const char* emotion) {
         return;
     }
 
-    SetFaceMode(FaceModeFromEmotion(emotion));
+    const FaceMode mode = FaceModeFromEmotion(emotion);
+
+    if (mode == FaceMode::kNeutral) {
+        // Emosi netral tidak boleh menimpa ekspresi yang sedang ditahan.
+        if (HoldActive()) {
+            return;
+        }
+        SetFaceMode(mode);
+        return;
+    }
+
+    g_hold_active = true;
+    g_hold_until = lv_tick_get() + kEmotionHoldMs;
+    g_from_emotion = true;
+    SetFaceMode(mode);
+    g_from_emotion = false;
 }
 
 void PocketOledDisplay::SetChatMessage(
@@ -290,6 +358,18 @@ void PocketOledDisplay::SetChatMessage(
         face_mode_ == FaceMode::kNeutral &&
         !music_mode_) {
         SetFaceMode(FaceMode::kSpeaking);
+    }
+
+    if (!music_mode_) {
+        const int detected = DetectEmotionFromText(role, content);
+        if (detected != 0) {
+            g_hold_active = true;
+            g_hold_until = lv_tick_get() + kEmotionHoldMs;
+            g_from_emotion = true;
+            SetFaceMode(
+                detected == 1 ? FaceMode::kSad : FaceMode::kAngry);
+            g_from_emotion = false;
+        }
     }
 }
 
@@ -343,6 +423,12 @@ void PocketOledDisplay::UpdateAnimationFrame() {
     if (music_mode_) {
         UpdateMusicVisualizer();
         return;
+    }
+
+    if (g_hold_active && !HoldActive()) {
+        g_hold_active = false;
+        face_mode_ =
+            standby_mode_ ? FaceMode::kSleepy : FaceMode::kNeutral;
     }
 
     if (kFaceDemo && animation_tick_ < 300) {
@@ -641,6 +727,11 @@ void PocketOledDisplay::UpdateMusicVisualizer() {
 }
 
 void PocketOledDisplay::SetFaceMode(FaceMode mode) {
+    // Status (Berbicara/Mendengarkan/dll) tidak boleh menimpa
+    // ekspresi emosi yang sedang ditahan.
+    if (!g_from_emotion && HoldActive()) {
+        return;
+    }
     face_mode_ = mode;
 
     if (mode != FaceMode::kNeutral) {
@@ -667,11 +758,13 @@ PocketOledDisplay::FaceModeFromEmotion(
     }
 
     if (Contains(emotion, "sad") ||
+        Contains(emotion, "sedih") ||
         Contains(emotion, "cry")) {
         return FaceMode::kSad;
     }
 
     if (Contains(emotion, "angry") ||
+        Contains(emotion, "marah") ||
         Contains(emotion, "rage")) {
         return FaceMode::kAngry;
     }
