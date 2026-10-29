@@ -21,7 +21,7 @@ constexpr bool kFaceDemo = false;
 // Bentuk mata ANGRY / SAD: badan mata (rounded) dipotong miring
 // oleh potongan persegi hitam bertingkat halus, tanpa rotation.
 constexpr int kSlantDrop = 8;        // selisih tinggi sisi luar vs dalam
-constexpr int kSlantStrips = 11;     // jumlah potongan penutup per mata
+constexpr int kSlantStrips = 6;     // jumlah potongan penutup per mata
 constexpr int kSlantBodyExtra = 9;   // badan mata dinaikkan agar sudut atas
                                      // yang membulat tersembunyi di balik garis
 constexpr int kAngryEyeHeight = 28;
@@ -223,7 +223,6 @@ void PocketOledDisplay::SetupUI() {
     }
 
     // Potongan penutup miring untuk ekspresi ANGRY / SAD.
-    #if 0
     for (int i = 0; i < kSlantStrips; ++i) {
         for (auto** slot : {&g_left_strips[i], &g_right_strips[i]}) {
             *slot = lv_obj_create(face_layer_);
@@ -235,7 +234,6 @@ void PocketOledDisplay::SetupUI() {
             lv_obj_add_flag(*slot, LV_OBJ_FLAG_HIDDEN);
         }
     }
-    #endif
 
     chat_line_ = lv_label_create(screen);
     lv_obj_set_pos(chat_line_, 0, 48);
