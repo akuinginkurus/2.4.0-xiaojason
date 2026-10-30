@@ -128,22 +128,32 @@ private:
     MotorController* motor_controller_ = nullptr;
     RadioPlayer radio_player_;
 
-    void InitializeRadioTools() {
-        auto& mcp_server = McpServer::GetInstance();
-        mcp_server.AddTool("self.radio.play_prambors",
-            "Start the Prambors FM online radio stream on the device. If radio is already playing, keep it playing.",
-            PropertyList(),
-            [this](const PropertyList&) -> ReturnValue {
-                return radio_player_.StartPrambors();
-            });
-        mcp_server.AddTool("self.radio.stop",
-            "Stop the currently playing online radio stream.",
-            PropertyList(),
-            [this](const PropertyList&) -> ReturnValue {
-                radio_player_.RequestStop();
-                return true;
-            });
-    }
+    
+void InitializeRadioTools() {
+    auto& mcp_server = McpServer::GetInstance();
+
+    mcp_server.AddTool(
+        "self.radio.play",
+        "Play Indonesian online radio when the user says "
+        "'Putar Radio' or 'Setel Radio'. "
+        "Start the radio stream on the device.",
+        PropertyList(),
+        [this](const PropertyList&) -> ReturnValue {
+            return radio_player_.StartRadio();
+        }
+    );
+
+    mcp_server.AddTool(
+        "self.radio.stop",
+        "Stop the currently playing online radio.",
+        PropertyList(),
+        [this](const PropertyList&) -> ReturnValue {
+            radio_player_.RequestStop();
+            return true;
+        }
+    );
+}
+
 
 
     void InitializeDisplayI2c() {
