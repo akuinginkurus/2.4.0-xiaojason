@@ -11,6 +11,7 @@
 #include <vector>
 #include <utility>
 #include "board.h"
+#include "display.h"
 #include "assets/lang_config.h"
 #include <esp_http_client.h>
 #include <esp_log.h>
