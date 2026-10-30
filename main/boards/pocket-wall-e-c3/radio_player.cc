@@ -14,6 +14,7 @@
 #include <esp_http_client.h>
 #include <esp_log.h>
 #include <esp_system.h>
+#include <esp_heap_caps.h>
 #include <esp_crt_bundle.h>
 #include <esp_audio_simple_dec.h>
 #include <esp_audio_simple_dec_default.h>
@@ -46,7 +47,8 @@ constexpr Station kStations[] = {
 constexpr size_t kStationCount = sizeof(kStations) / sizeof(kStations[0]);
 
 constexpr size_t kHttpReadSize = 1024;
-constexpr size_t kDecoderOutputSize = 8192;
+// Satu frame MP3 stereo 16-bit = 4608 byte. Lebih kecil dari sebelumnya untuk menghemat RAM.
+constexpr size_t kDecoderOutputSize = 4608;
 constexpr int kRadioOutputRate = 24000;
 constexpr int kMaxRedirects = 5;
 constexpr int kConnectTimeoutMs = 8000;
@@ -276,6 +278,19 @@ bool ConvertAndQueue(
         mono = std::move(converted);
     }
 
+    // Kasus umum: satu frame cukup dalam satu blok, kirim tanpa menyalin
+    // (hemat RAM sementara).
+    if (mono.size() <= 5760) {
+        if (!audio.IsRadioPlaybackActive()) {
+            return false;
+        }
+        if (!audio.PushRadioPcm(std::move(mono), pdMS_TO_TICKS(500))) {
+            ESP_LOGE(TAG, "Cannot push PCM to AudioService");
+            return false;
+        }
+        return true;
+    }
+
     // AudioService tetap satu-satunya penulis I2S.
     size_t offset = 0;
 
@@ -423,11 +438,12 @@ void RadioPlayer::TaskLoop() {
                 break;
             }
 
-            ESP_LOGI(TAG, "Trying station %u/%u: %s (free heap %u)",
+            ESP_LOGI(TAG, "Trying station %u/%u: %s (free heap %u, largest block %u)",
                      static_cast<unsigned>(i + 1),
                      static_cast<unsigned>(kStationCount),
                      kStations[i].name,
-                     static_cast<unsigned>(esp_get_free_heap_size()));
+                     static_cast<unsigned>(esp_get_free_heap_size()),
+                     static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
 
             client = ConnectStation(kStations[i], response_headers, stop_requested_);
             if (client != nullptr) {
@@ -475,7 +491,10 @@ void RadioPlayer::TaskLoop() {
             break;
         }
 
-        ESP_LOGI(TAG, "MP3 decoder opened successfully");
+        ESP_LOGI(TAG, "MP3 decoder opened successfully (free heap %u, largest block %u)",
+                 static_cast<unsigned>(esp_get_free_heap_size()),
+                 static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+        bool logged_first_bytes = false;
 
         // Loop streaming.
         while (!stop_requested_.load() && audio.IsRadioPlaybackActive()) {
@@ -493,6 +512,16 @@ void RadioPlayer::TaskLoop() {
             if (read == 0) {
                 vTaskDelay(pdMS_TO_TICKS(20));
                 continue;
+            }
+
+            if (!logged_first_bytes) {
+                logged_first_bytes = true;
+                ESP_LOGI(TAG, "First stream bytes (%d read): %02X %02X %02X %02X %02X %02X %02X %02X",
+                         read,
+                         input_buffer[0], read > 1 ? input_buffer[1] : 0,
+                         read > 2 ? input_buffer[2] : 0, read > 3 ? input_buffer[3] : 0,
+                         read > 4 ? input_buffer[4] : 0, read > 5 ? input_buffer[5] : 0,
+                         read > 6 ? input_buffer[6] : 0, read > 7 ? input_buffer[7] : 0);
             }
 
             esp_audio_simple_dec_raw_t raw = {
@@ -531,7 +560,11 @@ void RadioPlayer::TaskLoop() {
                 }
 
                 if (dec_ret != ESP_AUDIO_ERR_OK) {
-                    ESP_LOGE(TAG, "MP3 decode error: %d", dec_ret);
+                    ESP_LOGE(TAG, "MP3 decode error: %d (free heap %u, min %u, largest block %u)",
+                             dec_ret,
+                             static_cast<unsigned>(esp_get_free_heap_size()),
+                             static_cast<unsigned>(esp_get_minimum_free_heap_size()),
+                             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
                     stop_requested_.store(true);
                     break;
                 }
