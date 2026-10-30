@@ -24,10 +24,10 @@
 
 namespace {
 
-// URL awal Prambors menggunakan HTTP.
-// Redirect akan ditangani secara manual.
+// Prambors MP3 stream.
+// HTTP digunakan untuk menghindari masalah sertifikat TLS pada ESP32-C3.
 constexpr char kPramborsUrl[] =
-    "http://stream.rcs.revma.com/h77wwp48kxcwv";
+    "http://22253.live.streamtheworld.com/PRAMBORS_FM.mp3";
 
 constexpr size_t kHttpReadSize = 1024;
 constexpr size_t kDecoderOutputSize = 8192;
@@ -38,8 +38,6 @@ struct HttpResponseHeaders {
     std::string content_type;
 };
 
-// Mengambil response header dari HTTP_EVENT_ON_HEADER.
-// esp_http_client_get_header() bukan untuk response header.
 esp_err_t HttpEventHandler(esp_http_client_event_t* event) {
     if (event == nullptr || event->user_data == nullptr) {
         return ESP_OK;
@@ -71,16 +69,13 @@ esp_audio_simple_dec_type_t SelectDecoder(
         return ESP_AUDIO_SIMPLE_DEC_TYPE_NONE;
     }
 
-    if (strstr(content_type, "aac") != nullptr ||
-        strstr(content_type, "aacp") != nullptr) {
-        return ESP_AUDIO_SIMPLE_DEC_TYPE_AAC;
-    }
-
     if (strstr(content_type, "mpeg") != nullptr ||
         strstr(content_type, "mp3") != nullptr) {
         return ESP_AUDIO_SIMPLE_DEC_TYPE_MP3;
     }
 
+    // Radio ini ditujukan untuk MP3.
+    // AAC tidak digunakan.
     return ESP_AUDIO_SIMPLE_DEC_TYPE_NONE;
 }
 
@@ -124,11 +119,9 @@ bool ConvertAndQueue(
     } else {
 
         const size_t frames = input_samples / 2;
-
         mono.resize(frames);
 
         for (size_t i = 0; i < frames; i++) {
-
             const int32_t mixed =
                 static_cast<int32_t>(input[i * 2]) +
                 static_cast<int32_t>(input[i * 2 + 1]);
@@ -159,13 +152,11 @@ bool ConvertAndQueue(
                 esp_ae_rate_cvt_open(&cfg, &resampler);
 
             if (err != ESP_AE_ERR_OK || resampler == nullptr) {
-
                 ESP_LOGE(
                     TAG,
                     "Cannot create resampler: %d",
                     err
                 );
-
                 return false;
             }
         }
@@ -180,7 +171,6 @@ bool ConvertAndQueue(
         }
 
         std::vector<int16_t> converted(max_output);
-
         uint32_t actual_output = max_output;
 
         if (esp_ae_rate_cvt_process(
@@ -196,10 +186,8 @@ bool ConvertAndQueue(
         mono = std::move(converted);
     }
 
-    // Kirim PCM ke antrean AudioService.
     // AudioOutputTask tetap menjadi satu-satunya task
     // yang menulis data ke I2S.
-
     size_t offset = 0;
 
     while (offset < mono.size()) {
@@ -249,12 +237,7 @@ bool RadioPlayer::StartPrambors() {
         Application::GetInstance().GetAudioService();
 
     if (!audio.StartRadioPlayback()) {
-
-        ESP_LOGE(
-            TAG,
-            "AudioService refused radio playback"
-        );
-
+        ESP_LOGE(TAG, "AudioService refused radio playback");
         return false;
     }
 
@@ -275,7 +258,6 @@ bool RadioPlayer::StartPrambors() {
         audio.StopRadioPlayback(true);
 
         ESP_LOGE(TAG, "Cannot create radio task");
-
         return false;
     }
 
@@ -315,8 +297,7 @@ void RadioPlayer::TaskLoop() {
     http_cfg.buffer_size = 2048;
     http_cfg.buffer_size_tx = 512;
 
-    // Redirect ditangani manual agar setiap respons
-    // 30x dapat diperiksa sebelum membuka URL berikutnya.
+    // Redirect ditangani manual.
     http_cfg.disable_auto_redirect = true;
     http_cfg.max_redirection_count = kMaxRedirects;
 
@@ -344,11 +325,7 @@ void RadioPlayer::TaskLoop() {
             input_buffer == nullptr ||
             output_buffer == nullptr) {
 
-            ESP_LOGE(
-                TAG,
-                "Not enough memory to start radio"
-            );
-
+            ESP_LOGE(TAG, "Not enough memory to start radio");
             break;
         }
 
@@ -367,13 +344,11 @@ void RadioPlayer::TaskLoop() {
                 esp_http_client_open(client, 0);
 
             if (open_err != ESP_OK) {
-
                 ESP_LOGE(
                     TAG,
                     "HTTP open failed: %s",
                     esp_err_to_name(open_err)
                 );
-
                 break;
             }
 
@@ -383,14 +358,8 @@ void RadioPlayer::TaskLoop() {
             status =
                 esp_http_client_get_status_code(client);
 
-            ESP_LOGI(
-                TAG,
-                "HTTP status: %d",
-                status
-            );
+            ESP_LOGI(TAG, "HTTP status: %d", status);
 
-            // Respons redirect: pindahkan URL ke alamat
-            // tujuan yang disimpan oleh HTTP client.
             if (status == 301 ||
                 status == 302 ||
                 status == 303 ||
@@ -405,12 +374,7 @@ void RadioPlayer::TaskLoop() {
                 );
 
                 if (redirect >= kMaxRedirects) {
-
-                    ESP_LOGE(
-                        TAG,
-                        "Too many radio redirects"
-                    );
-
+                    ESP_LOGE(TAG, "Too many radio redirects");
                     esp_http_client_close(client);
                     break;
                 }
@@ -421,13 +385,11 @@ void RadioPlayer::TaskLoop() {
                 esp_http_client_close(client);
 
                 if (redirect_err != ESP_OK) {
-
                     ESP_LOGE(
                         TAG,
                         "Cannot follow redirect: %s",
                         esp_err_to_name(redirect_err)
                     );
-
                     break;
                 }
 
@@ -448,18 +410,12 @@ void RadioPlayer::TaskLoop() {
         }
 
         if (!connected) {
-            ESP_LOGE(TAG, "Cannot connect to Prambors stream");
+            ESP_LOGE(TAG, "Cannot connect to Prambors MP3 stream");
             break;
         }
 
-        // Ambil Content-Type dari response header.
         if (response_headers.content_type.empty()) {
-
-            ESP_LOGE(
-                TAG,
-                "Radio response has no Content-Type"
-            );
-
+            ESP_LOGE(TAG, "Radio response has no Content-Type");
             break;
         }
 
@@ -472,26 +428,23 @@ void RadioPlayer::TaskLoop() {
         const auto decoder_type =
             SelectDecoder(response_headers.content_type.c_str());
 
-        if (decoder_type == ESP_AUDIO_SIMPLE_DEC_TYPE_NONE) {
-
+        if (decoder_type != ESP_AUDIO_SIMPLE_DEC_TYPE_MP3) {
             ESP_LOGE(
                 TAG,
-                "Unsupported Content-Type: %s",
+                "Stream is not MP3. Content-Type: %s",
                 response_headers.content_type.c_str()
             );
-
             break;
         }
 
         ESP_LOGI(
             TAG,
-            "Connected to Prambors, length=%lld",
+            "Connected to Prambors MP3, length=%lld",
             static_cast<long long>(content_length)
         );
 
         // Registrasi decoder.
         if (esp_audio_dec_register_default() != ESP_AUDIO_ERR_OK) {
-
             ESP_LOGE(TAG, "Cannot register audio decoders");
             break;
         }
@@ -500,30 +453,17 @@ void RadioPlayer::TaskLoop() {
 
         if (esp_audio_simple_dec_register_default() !=
             ESP_AUDIO_ERR_OK) {
-
             ESP_LOGE(TAG, "Cannot register simple decoders");
             break;
         }
 
         simple_decoder_registered = true;
 
-        DecoderConfig all_cfg = {};
-
-        all_cfg.aac.aac_plus_enable = true;
-
+        // MP3 tidak membutuhkan konfigurasi AAC.
         esp_audio_simple_dec_cfg_t dec_cfg = {
-            .dec_type = decoder_type,
-
-            .dec_cfg =
-                decoder_type == ESP_AUDIO_SIMPLE_DEC_TYPE_AAC
-                    ? &all_cfg
-                    : nullptr,
-
-            .cfg_size =
-                decoder_type == ESP_AUDIO_SIMPLE_DEC_TYPE_AAC
-                    ? static_cast<int>(sizeof(esp_aac_dec_cfg_t))
-                    : 0,
-
+            .dec_type = ESP_AUDIO_SIMPLE_DEC_TYPE_MP3,
+            .dec_cfg = nullptr,
+            .cfg_size = 0,
             .use_frame_dec = false,
         };
 
@@ -532,11 +472,11 @@ void RadioPlayer::TaskLoop() {
                 &decoder) != ESP_AUDIO_ERR_OK ||
             decoder == nullptr) {
 
-            ESP_LOGE(TAG, "Cannot open radio decoder");
+            ESP_LOGE(TAG, "Cannot open MP3 decoder");
             break;
         }
 
-        ESP_LOGI(TAG, "Prambors decoder started");
+        ESP_LOGI(TAG, "Prambors MP3 decoder started");
 
         // Loop streaming radio.
         while (!stop_requested_.load() &&
@@ -550,18 +490,11 @@ void RadioPlayer::TaskLoop() {
                 );
 
             if (read < 0) {
-
-                ESP_LOGE(
-                    TAG,
-                    "Radio stream read failed: %d",
-                    read
-                );
-
+                ESP_LOGE(TAG, "Radio stream read failed: %d", read);
                 break;
             }
 
             if (read == 0) {
-
                 vTaskDelay(pdMS_TO_TICKS(20));
                 continue;
             }
@@ -603,7 +536,6 @@ void RadioPlayer::TaskLoop() {
                         );
 
                     if (bigger == nullptr) {
-
                         ESP_LOGE(
                             TAG,
                             "Cannot allocate decoder output buffer"
@@ -618,10 +550,9 @@ void RadioPlayer::TaskLoop() {
                 }
 
                 if (dec_ret != ESP_AUDIO_ERR_OK) {
-
                     ESP_LOGE(
                         TAG,
-                        "AAC/MP3 decode error: %d",
+                        "MP3 decode error: %d",
                         dec_ret
                     );
 
@@ -643,10 +574,7 @@ void RadioPlayer::TaskLoop() {
                             info,
                             resampler)) {
 
-                        ESP_LOGE(
-                            TAG,
-                            "Could not queue radio PCM"
-                        );
+                        ESP_LOGE(TAG, "Could not queue radio PCM");
 
                         stop_requested_.store(true);
                         break;
@@ -668,7 +596,6 @@ void RadioPlayer::TaskLoop() {
 
     // Bersihkan resource.
     if (client != nullptr) {
-
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
     }
