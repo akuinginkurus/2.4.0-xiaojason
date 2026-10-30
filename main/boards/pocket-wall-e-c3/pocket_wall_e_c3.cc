@@ -16,6 +16,8 @@
 #include <cstdint>
 #include <climits>
 #include "motor_controller.h"
+#include "radio_player.h"
+#include "mcp_server.h"
 
 #define TAG "PocketWallEC3"
 
@@ -124,6 +126,24 @@ private:
     Display* display_ = nullptr;
     Button action_button_;
     MotorController* motor_controller_ = nullptr;
+    RadioPlayer radio_player_;
+
+    void InitializeRadioTools() {
+        auto& mcp_server = McpServer::GetInstance();
+        mcp_server.AddTool("self.radio.play_prambors",
+            "Start the Prambors FM online radio stream on the device. If radio is already playing, keep it playing.",
+            PropertyList(),
+            [this](const PropertyList&) -> ReturnValue {
+                return radio_player_.StartPrambors();
+            });
+        mcp_server.AddTool("self.radio.stop",
+            "Stop the currently playing online radio stream.",
+            PropertyList(),
+            [this](const PropertyList&) -> ReturnValue {
+                radio_player_.RequestStop();
+                return true;
+            });
+    }
 
 
     void InitializeDisplayI2c() {
@@ -183,6 +203,10 @@ private:
                 EnterWifiConfigMode();
                 return;
             }
+            if (radio_player_.IsPlaying() || app.GetAudioService().IsRadioPlaybackActive()) {
+                radio_player_.RequestStop();
+                return;
+            }
             app.ToggleChatState();
         });
         action_button_.OnLongPress([this]() { EnterWifiConfigMode(); });
@@ -193,6 +217,7 @@ public:
         InitializeDisplayI2c();
         InitializeDisplay();
         InitializeButton();
+        InitializeRadioTools();
         motor_controller_ = new MotorController(MOTOR_LEFT_IN1_PIN, MOTOR_LEFT_IN2_PIN,
                                                 MOTOR_RIGHT_IN1_PIN, MOTOR_RIGHT_IN2_PIN);
         ESP_LOGI(TAG, "Pocket Wall-E C3 initialized");
