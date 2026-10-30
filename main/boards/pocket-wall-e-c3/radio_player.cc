@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <strings.h>
 #include <vector>
 #include <utility>
 
@@ -22,31 +24,60 @@
 
 namespace {
 
-// Stream Prambors melalui HTTP untuk menghindari kegagalan
-// verifikasi sertifikat TLS pada ESP32-C3.
+// URL awal Prambors menggunakan HTTP.
+// Redirect akan ditangani secara manual.
 constexpr char kPramborsUrl[] =
     "http://stream.rcs.revma.com/h77wwp48kxcwv";
 
 constexpr size_t kHttpReadSize = 1024;
 constexpr size_t kDecoderOutputSize = 8192;
 constexpr int kRadioOutputRate = 24000;
+constexpr int kMaxRedirects = 5;
+
+struct HttpResponseHeaders {
+    std::string content_type;
+};
+
+// Mengambil response header dari HTTP_EVENT_ON_HEADER.
+// esp_http_client_get_header() bukan untuk response header.
+esp_err_t HttpEventHandler(esp_http_client_event_t* event) {
+    if (event == nullptr || event->user_data == nullptr) {
+        return ESP_OK;
+    }
+
+    if (event->event_id == HTTP_EVENT_ON_HEADER &&
+        event->header_key != nullptr &&
+        event->header_value != nullptr) {
+
+        auto* headers =
+            static_cast<HttpResponseHeaders*>(event->user_data);
+
+        if (strcasecmp(event->header_key, "Content-Type") == 0) {
+            headers->content_type = event->header_value;
+        }
+    }
+
+    return ESP_OK;
+}
 
 struct DecoderConfig {
     esp_aac_dec_cfg_t aac;
 };
 
-esp_audio_simple_dec_type_t SelectDecoder(const char* content_type) {
+esp_audio_simple_dec_type_t SelectDecoder(
+    const char* content_type) {
+
     if (content_type == nullptr) {
         return ESP_AUDIO_SIMPLE_DEC_TYPE_NONE;
     }
 
-    if (strstr(content_type, "aac") ||
-        strstr(content_type, "aacp")) {
+    if (strstr(content_type, "aac") != nullptr ||
+        strstr(content_type, "aacp") != nullptr) {
         return ESP_AUDIO_SIMPLE_DEC_TYPE_AAC;
     }
 
-    if (strstr(content_type, "mpeg") ||
-        strstr(content_type, "mp3")) {
+    if (strstr(content_type, "mpeg") != nullptr ||
+        strstr(content_type, "mp3") != nullptr) {
         return ESP_AUDIO_SIMPLE_DEC_TYPE_MP3;
     }
 
@@ -88,10 +119,7 @@ bool ConvertAndQueue(
     // Stereo menjadi mono.
     if (info.channel == 1) {
 
-        mono.assign(
-            input,
-            input + input_samples
-        );
+        mono.assign(input, input + input_samples);
 
     } else {
 
@@ -103,11 +131,14 @@ bool ConvertAndQueue(
 
             const int32_t mixed =
                 static_cast<int32_t>(input[i * 2]) +
-                input[i * 2 + 1];
+                static_cast<int32_t>(input[i * 2 + 1]);
 
-            mono[i] =
-                static_cast<int16_t>(mixed / 2);
+            mono[i] = static_cast<int16_t>(mixed / 2);
         }
+    }
+
+    if (mono.empty()) {
+        return true;
     }
 
     // Resampling ke 24 kHz.
@@ -121,15 +152,13 @@ bool ConvertAndQueue(
                 .channel = 1,
                 .bits_per_sample = ESP_AUDIO_BIT16,
                 .complexity = 2,
-                .perf_type =
-                    ESP_AE_RATE_CVT_PERF_TYPE_SPEED,
+                .perf_type = ESP_AE_RATE_CVT_PERF_TYPE_SPEED,
             };
 
             const auto err =
                 esp_ae_rate_cvt_open(&cfg, &resampler);
 
-            if (err != ESP_AE_ERR_OK ||
-                resampler == nullptr) {
+            if (err != ESP_AE_ERR_OK || resampler == nullptr) {
 
                 ESP_LOGE(
                     TAG,
@@ -147,7 +176,6 @@ bool ConvertAndQueue(
                 resampler,
                 mono.size(),
                 &max_output) != ESP_AE_ERR_OK) {
-
             return false;
         }
 
@@ -157,26 +185,20 @@ bool ConvertAndQueue(
 
         if (esp_ae_rate_cvt_process(
                 resampler,
-                reinterpret_cast<esp_ae_sample_t>(
-                    mono.data()
-                ),
+                reinterpret_cast<esp_ae_sample_t>(mono.data()),
                 mono.size(),
-                reinterpret_cast<esp_ae_sample_t>(
-                    converted.data()
-                ),
+                reinterpret_cast<esp_ae_sample_t>(converted.data()),
                 &actual_output) != ESP_AE_ERR_OK) {
-
             return false;
         }
 
         converted.resize(actual_output);
-
         mono = std::move(converted);
     }
 
     // Kirim PCM ke antrean AudioService.
-    // AudioOutputTask tetap menjadi satu-satunya
-    // task yang menulis data ke I2S.
+    // AudioOutputTask tetap menjadi satu-satunya task
+    // yang menulis data ke I2S.
 
     size_t offset = 0;
 
@@ -187,10 +209,7 @@ bool ConvertAndQueue(
         }
 
         const size_t count =
-            std::min<size_t>(
-                5760,
-                mono.size() - offset
-            );
+            std::min<size_t>(5760, mono.size() - offset);
 
         std::vector<int16_t> block(
             mono.begin() + offset,
@@ -200,7 +219,6 @@ bool ConvertAndQueue(
         if (!audio.PushRadioPcm(
                 std::move(block),
                 pdMS_TO_TICKS(500))) {
-
             return false;
         }
 
@@ -272,8 +290,7 @@ void RadioPlayer::RequestStop() {
 
 void RadioPlayer::TaskEntry(void* arg) {
 
-    auto* self =
-        static_cast<RadioPlayer*>(arg);
+    auto* self = static_cast<RadioPlayer*>(arg);
 
     self->TaskLoop();
 
@@ -289,21 +306,27 @@ void RadioPlayer::TaskLoop() {
     auto& audio =
         Application::GetInstance().GetAudioService();
 
+    HttpResponseHeaders response_headers;
+
     esp_http_client_config_t http_cfg = {};
 
     http_cfg.url = kPramborsUrl;
-    http_cfg.timeout_ms = 1200;
+    http_cfg.timeout_ms = 5000;
     http_cfg.buffer_size = 2048;
     http_cfg.buffer_size_tx = 512;
 
-    http_cfg.disable_auto_redirect = false;
-    http_cfg.max_redirection_count = 5;
+    // Redirect ditangani manual agar setiap respons
+    // 30x dapat diperiksa sebelum membuka URL berikutnya.
+    http_cfg.disable_auto_redirect = true;
+    http_cfg.max_redirection_count = kMaxRedirects;
+
+    http_cfg.event_handler = HttpEventHandler;
+    http_cfg.user_data = &response_headers;
 
     esp_http_client_handle_t client =
         esp_http_client_init(&http_cfg);
 
     esp_audio_simple_dec_handle_t decoder = nullptr;
-
     esp_ae_rate_cvt_handle_t resampler = nullptr;
 
     bool decoder_registered = false;
@@ -314,7 +337,6 @@ void RadioPlayer::TaskLoop() {
 
     uint8_t* output_buffer =
         static_cast<uint8_t*>(malloc(kDecoderOutputSize));
-
 
     do {
 
@@ -330,58 +352,112 @@ void RadioPlayer::TaskLoop() {
             break;
         }
 
-        // Buka koneksi HTTP.
-        if (esp_http_client_open(client, 0) != ESP_OK) {
+        // Buka koneksi dan ikuti redirect.
+        bool connected = false;
+        int status = -1;
+        int64_t content_length = -1;
 
-            ESP_LOGE(
+        for (int redirect = 0;
+             redirect <= kMaxRedirects;
+             redirect++) {
+
+            response_headers.content_type.clear();
+
+            const esp_err_t open_err =
+                esp_http_client_open(client, 0);
+
+            if (open_err != ESP_OK) {
+
+                ESP_LOGE(
+                    TAG,
+                    "HTTP open failed: %s",
+                    esp_err_to_name(open_err)
+                );
+
+                break;
+            }
+
+            content_length =
+                esp_http_client_fetch_headers(client);
+
+            status =
+                esp_http_client_get_status_code(client);
+
+            ESP_LOGI(
                 TAG,
-                "Cannot connect to Prambors stream"
-            );
-
-            break;
-        }
-
-        const int64_t content_length =
-            esp_http_client_fetch_headers(client);
-
-        const int status =
-            esp_http_client_get_status_code(client);
-
-        ESP_LOGI(
-            TAG,
-            "HTTP status: %d",
-            status
-        );
-
-        if (status != 200 && status != 206) {
-
-            ESP_LOGE(
-                TAG,
-                "Radio HTTP status error: %d",
+                "HTTP status: %d",
                 status
             );
 
+            // Respons redirect: pindahkan URL ke alamat
+            // tujuan yang disimpan oleh HTTP client.
+            if (status == 301 ||
+                status == 302 ||
+                status == 303 ||
+                status == 307 ||
+                status == 308) {
+
+                ESP_LOGW(
+                    TAG,
+                    "Radio redirect %d/%d",
+                    redirect + 1,
+                    kMaxRedirects
+                );
+
+                if (redirect >= kMaxRedirects) {
+
+                    ESP_LOGE(
+                        TAG,
+                        "Too many radio redirects"
+                    );
+
+                    esp_http_client_close(client);
+                    break;
+                }
+
+                const esp_err_t redirect_err =
+                    esp_http_client_set_redirection(client);
+
+                esp_http_client_close(client);
+
+                if (redirect_err != ESP_OK) {
+
+                    ESP_LOGE(
+                        TAG,
+                        "Cannot follow redirect: %s",
+                        esp_err_to_name(redirect_err)
+                    );
+
+                    break;
+                }
+
+                continue;
+            }
+
+            if (status == 200 || status == 206) {
+                connected = true;
+            } else {
+                ESP_LOGE(
+                    TAG,
+                    "Radio HTTP status error: %d",
+                    status
+                );
+            }
+
             break;
         }
 
-        // Ambil Content-Type dari response HTTP.
-        char* content_type = nullptr;
+        if (!connected) {
+            ESP_LOGE(TAG, "Cannot connect to Prambors stream");
+            break;
+        }
 
-        const esp_err_t header_err =
-            esp_http_client_get_header(
-                client,
-                "Content-Type",
-                &content_type
-            );
-
-        if (header_err != ESP_OK ||
-            content_type == nullptr) {
+        // Ambil Content-Type dari response header.
+        if (response_headers.content_type.empty()) {
 
             ESP_LOGE(
                 TAG,
-                "Radio response has no Content-Type "
-                "(err=%s)",
-                esp_err_to_name(header_err)
+                "Radio response has no Content-Type"
             );
 
             break;
@@ -390,19 +466,18 @@ void RadioPlayer::TaskLoop() {
         ESP_LOGI(
             TAG,
             "Radio Content-Type: %s",
-            content_type
+            response_headers.content_type.c_str()
         );
 
         const auto decoder_type =
-            SelectDecoder(content_type);
+            SelectDecoder(response_headers.content_type.c_str());
 
-        if (decoder_type ==
-            ESP_AUDIO_SIMPLE_DEC_TYPE_NONE) {
+        if (decoder_type == ESP_AUDIO_SIMPLE_DEC_TYPE_NONE) {
 
             ESP_LOGE(
                 TAG,
                 "Unsupported Content-Type: %s",
-                content_type
+                response_headers.content_type.c_str()
             );
 
             break;
@@ -415,14 +490,9 @@ void RadioPlayer::TaskLoop() {
         );
 
         // Registrasi decoder.
-        if (esp_audio_dec_register_default() !=
-            ESP_AUDIO_ERR_OK) {
+        if (esp_audio_dec_register_default() != ESP_AUDIO_ERR_OK) {
 
-            ESP_LOGE(
-                TAG,
-                "Cannot register audio decoders"
-            );
-
+            ESP_LOGE(TAG, "Cannot register audio decoders");
             break;
         }
 
@@ -431,11 +501,7 @@ void RadioPlayer::TaskLoop() {
         if (esp_audio_simple_dec_register_default() !=
             ESP_AUDIO_ERR_OK) {
 
-            ESP_LOGE(
-                TAG,
-                "Cannot register simple decoders"
-            );
-
+            ESP_LOGE(TAG, "Cannot register simple decoders");
             break;
         }
 
@@ -449,17 +515,13 @@ void RadioPlayer::TaskLoop() {
             .dec_type = decoder_type,
 
             .dec_cfg =
-                decoder_type ==
-                    ESP_AUDIO_SIMPLE_DEC_TYPE_AAC
+                decoder_type == ESP_AUDIO_SIMPLE_DEC_TYPE_AAC
                     ? &all_cfg
                     : nullptr,
 
             .cfg_size =
-                decoder_type ==
-                    ESP_AUDIO_SIMPLE_DEC_TYPE_AAC
-                    ? static_cast<int>(
-                        sizeof(esp_aac_dec_cfg_t)
-                      )
+                decoder_type == ESP_AUDIO_SIMPLE_DEC_TYPE_AAC
+                    ? static_cast<int>(sizeof(esp_aac_dec_cfg_t))
                     : 0,
 
             .use_frame_dec = false,
@@ -470,19 +532,11 @@ void RadioPlayer::TaskLoop() {
                 &decoder) != ESP_AUDIO_ERR_OK ||
             decoder == nullptr) {
 
-            ESP_LOGE(
-                TAG,
-                "Cannot open radio decoder"
-            );
-
+            ESP_LOGE(TAG, "Cannot open radio decoder");
             break;
         }
 
-        ESP_LOGI(
-            TAG,
-            "Prambors decoder started"
-        );
-
+        ESP_LOGI(TAG, "Prambors decoder started");
 
         // Loop streaming radio.
         while (!stop_requested_.load() &&
@@ -499,7 +553,8 @@ void RadioPlayer::TaskLoop() {
 
                 ESP_LOGE(
                     TAG,
-                    "Radio stream read failed"
+                    "Radio stream read failed: %d",
+                    read
                 );
 
                 break;
@@ -508,7 +563,6 @@ void RadioPlayer::TaskLoop() {
             if (read == 0) {
 
                 vTaskDelay(pdMS_TO_TICKS(20));
-
                 continue;
             }
 
@@ -520,7 +574,8 @@ void RadioPlayer::TaskLoop() {
             };
 
             while (raw.len > 0 &&
-                   !stop_requested_.load()) {
+                   !stop_requested_.load() &&
+                   audio.IsRadioPlaybackActive()) {
 
                 esp_audio_simple_dec_out_t frame = {
                     .buffer = output_buffer,
@@ -536,10 +591,8 @@ void RadioPlayer::TaskLoop() {
                         &frame
                     );
 
-                if (dec_ret ==
-                        ESP_AUDIO_ERR_BUFF_NOT_ENOUGH &&
-                    frame.needed_size >
-                        kDecoderOutputSize) {
+                if (dec_ret == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH &&
+                    frame.needed_size > kDecoderOutputSize) {
 
                     uint8_t* bigger =
                         static_cast<uint8_t*>(
@@ -551,13 +604,16 @@ void RadioPlayer::TaskLoop() {
 
                     if (bigger == nullptr) {
 
-                        stop_requested_.store(true);
+                        ESP_LOGE(
+                            TAG,
+                            "Cannot allocate decoder output buffer"
+                        );
 
+                        stop_requested_.store(true);
                         break;
                     }
 
                     output_buffer = bigger;
-
                     continue;
                 }
 
@@ -570,7 +626,6 @@ void RadioPlayer::TaskLoop() {
                     );
 
                     stop_requested_.store(true);
-
                     break;
                 }
 
@@ -594,7 +649,6 @@ void RadioPlayer::TaskLoop() {
                         );
 
                         stop_requested_.store(true);
-
                         break;
                     }
                 }
@@ -605,6 +659,7 @@ void RadioPlayer::TaskLoop() {
 
                 raw.len -= raw.consumed;
                 raw.buffer += raw.consumed;
+                raw.consumed = 0;
             }
         }
 
@@ -615,7 +670,6 @@ void RadioPlayer::TaskLoop() {
     if (client != nullptr) {
 
         esp_http_client_close(client);
-
         esp_http_client_cleanup(client);
     }
 
@@ -640,8 +694,5 @@ void RadioPlayer::TaskLoop() {
 
     audio.StopRadioPlayback(true);
 
-    ESP_LOGI(
-        TAG,
-        "Prambors playback stopped"
-    );
+    ESP_LOGI(TAG, "Prambors playback stopped");
 }
