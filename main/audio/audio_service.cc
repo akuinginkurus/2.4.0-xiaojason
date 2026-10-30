@@ -45,6 +45,7 @@ constexpr size_t kRadioQueueDepth = 6;
 constexpr size_t kRadioPrebufferBlocks = 3;
 std::atomic<bool> g_radio_prebuffered{false};
 std::atomic<uint32_t> g_radio_underruns{0};
+uint32_t g_radio_underruns_logged = 0;  // hanya dipakai dari PushRadioPcm
 
 bool OpenOpusEncoder(void** encoder, int* frame_size, int* outbuf_size) {
     esp_opus_enc_config_t opus_enc_cfg = AS_OPUS_ENC_CONFIG();
@@ -349,10 +350,9 @@ void AudioService::AudioOutputTask() {
         if (radio_playback_active_.load() && audio_playback_queue_.empty() &&
             g_radio_prebuffered.load()) {
             g_radio_prebuffered.store(false);
-            const uint32_t n = ++g_radio_underruns;
-            if (n <= 20 || n % 10 == 0) {
-                ESP_LOGW(TAG, "Radio underrun #%u", static_cast<unsigned>(n));
-            }
+            // Hanya hitung. JANGAN log di sini: stack task audio_output cuma 2 KB
+            // dan ESP_LOGW membuatnya overflow (crash "Stack protection fault").
+            ++g_radio_underruns;
         }
         audio_queue_cv_.wait(lock, [this]() {
             if (service_stopped_.load()) {
@@ -690,6 +690,7 @@ bool AudioService::StartRadioPlayback() {
         }
         g_radio_prebuffered.store(false);
         g_radio_underruns.store(0);
+        g_radio_underruns_logged = 0;
         radio_restore_wake_word_ = IsWakeWordRunning();
         radio_restore_voice_processing_ = IsAudioProcessorRunning();
         radio_playback_active_.store(true);
@@ -811,6 +812,16 @@ bool AudioService::PushRadioPcm(std::vector<int16_t>&& pcm, TickType_t wait_tick
     task->timestamp = 0;
     audio_playback_queue_.push_back(std::move(task));
     audio_queue_cv_.notify_all();
+    lock.unlock();
+
+    // Log underrun dari sini (task radio punya stack besar), bukan dari audio_output.
+    const uint32_t underruns = g_radio_underruns.load();
+    if (underruns != g_radio_underruns_logged) {
+        g_radio_underruns_logged = underruns;
+        if (underruns <= 20 || underruns % 10 == 0) {
+            ESP_LOGW(TAG, "Radio underrun #%u", static_cast<unsigned>(underruns));
+        }
+    }
     return true;
 }
 
