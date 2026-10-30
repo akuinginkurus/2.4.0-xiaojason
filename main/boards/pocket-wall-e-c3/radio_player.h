@@ -1,3 +1,4 @@
+
 #pragma once
 
 #include <atomic>
@@ -10,7 +11,7 @@ public:
     RadioPlayer();
     ~RadioPlayer();
 
-    bool StartPrambors();
+    bool StartRadio();
     void RequestStop();
 
     bool IsPlaying() const {
@@ -24,8 +25,8 @@ private:
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool> active_{false};
 
-    // 0 = menunggu koneksi/audio pertama
-    // 1 = radio berhasil mulai mengirim PCM
+    // 0 = menunggu audio pertama
+    // 1 = PCM berhasil dikirim
     // -1 = gagal memulai radio
     std::atomic<int> startup_state_{0};
 
