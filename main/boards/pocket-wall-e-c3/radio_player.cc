@@ -183,7 +183,15 @@ void RadioPlayer::TaskLoop() {
             ESP_LOGE(TAG, "Radio HTTP status: %d", status);
             break;
         }
-        const char* content_type = esp_http_client_get_content_type(client);
+        // ESP-IDF 5.5 exposes response headers through get_header();
+        // there is no esp_http_client_get_content_type() API.
+        char* content_type = nullptr;
+        const esp_err_t header_err = esp_http_client_get_header(client, "Content-Type", &content_type);
+        if (header_err != ESP_OK || content_type == nullptr) {
+            ESP_LOGE(TAG, "Radio response has no Content-Type header (err=%s)",
+                     esp_err_to_name(header_err));
+            break;
+        }
         const auto decoder_type = SelectDecoder(content_type);
         if (decoder_type == ESP_AUDIO_SIMPLE_DEC_TYPE_NONE) {
             ESP_LOGE(TAG, "Unsupported radio Content-Type: %s", content_type ? content_type : "(missing)");
@@ -208,7 +216,7 @@ void RadioPlayer::TaskLoop() {
         esp_audio_simple_dec_cfg_t dec_cfg = {
             .dec_type = decoder_type,
             .dec_cfg = decoder_type == ESP_AUDIO_SIMPLE_DEC_TYPE_AAC ? &all_cfg : nullptr,
-            .cfg_size = decoder_type == ESP_AUDIO_SIMPLE_DEC_TYPE_AAC ? sizeof(esp_aac_dec_cfg_t) : 0,
+            .cfg_size = decoder_type == ESP_AUDIO_SIMPLE_DEC_TYPE_AAC ? static_cast<int>(sizeof(esp_aac_dec_cfg_t)) : 0,
             .use_frame_dec = false,
         };
         if (esp_audio_simple_dec_open(&dec_cfg, &decoder) != ESP_AUDIO_ERR_OK || decoder == nullptr) {
