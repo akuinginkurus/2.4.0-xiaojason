@@ -1,4 +1,3 @@
-
 #include "radio_player.h"
 
 #include <algorithm>
@@ -12,27 +11,31 @@
 
 #include <esp_http_client.h>
 #include <esp_log.h>
+#include <esp_crt_bundle.h>
 #include <esp_audio_simple_dec.h>
 #include <esp_audio_simple_dec_default.h>
-#include <esp_aac_dec.h>
 #include <esp_ae_rate_cvt.h>
 
 #include "application.h"
 #include "audio/audio_service.h"
 
-#define TAG "PramborsRadio"
+#define TAG "DahliaRadio"
 
 namespace {
 
-// Prambors MP3 stream.
-// HTTP digunakan untuk menghindari masalah sertifikat TLS pada ESP32-C3.
-constexpr char kPramborsUrl[] =
-    "http://22253.live.streamtheworld.com/PRAMBORS_FM.mp3";
+// Radio Dahlia Bandung 101.5 FM
+// Stream MP3.
+constexpr char kRadioUrl[] =
+    "https://svara-stream.radioddns.net/bandung_dahliafm";
 
 constexpr size_t kHttpReadSize = 1024;
 constexpr size_t kDecoderOutputSize = 8192;
+
 constexpr int kRadioOutputRate = 24000;
 constexpr int kMaxRedirects = 5;
+
+// Waktu maksimum menunggu audio pertama.
+constexpr int kStartupTimeoutMs = 20000;
 
 struct HttpResponseHeaders {
     std::string content_type;
@@ -58,25 +61,22 @@ esp_err_t HttpEventHandler(esp_http_client_event_t* event) {
     return ESP_OK;
 }
 
-struct DecoderConfig {
-    esp_aac_dec_cfg_t aac;
-};
+bool IsMp3ContentType(const std::string& content_type) {
+    std::string value = content_type;
 
-esp_audio_simple_dec_type_t SelectDecoder(
-    const char* content_type) {
+    std::transform(
+        value.begin(),
+        value.end(),
+        value.begin(),
+        [](unsigned char c) {
+            return static_cast<char>(tolower(c));
+        }
+    );
 
-    if (content_type == nullptr) {
-        return ESP_AUDIO_SIMPLE_DEC_TYPE_NONE;
-    }
-
-    if (strstr(content_type, "mpeg") != nullptr ||
-        strstr(content_type, "mp3") != nullptr) {
-        return ESP_AUDIO_SIMPLE_DEC_TYPE_MP3;
-    }
-
-    // Radio ini ditujukan untuk MP3.
-    // AAC tidak digunakan.
-    return ESP_AUDIO_SIMPLE_DEC_TYPE_NONE;
+    return value.find("audio/mpeg") != std::string::npos ||
+           value.find("audio/mp3") != std::string::npos ||
+           value.find("audio/x-mpeg") != std::string::npos ||
+           value.find("application/octet-stream") != std::string::npos;
 }
 
 bool ConvertAndQueue(
@@ -167,6 +167,7 @@ bool ConvertAndQueue(
                 resampler,
                 mono.size(),
                 &max_output) != ESP_AE_ERR_OK) {
+            ESP_LOGE(TAG, "Cannot get resampler output size");
             return false;
         }
 
@@ -179,6 +180,8 @@ bool ConvertAndQueue(
                 mono.size(),
                 reinterpret_cast<esp_ae_sample_t>(converted.data()),
                 &actual_output) != ESP_AE_ERR_OK) {
+
+            ESP_LOGE(TAG, "Resampling failed");
             return false;
         }
 
@@ -207,6 +210,8 @@ bool ConvertAndQueue(
         if (!audio.PushRadioPcm(
                 std::move(block),
                 pdMS_TO_TICKS(500))) {
+
+            ESP_LOGE(TAG, "Cannot push PCM to AudioService");
             return false;
         }
 
@@ -229,8 +234,19 @@ RadioPlayer::~RadioPlayer() {
 
 bool RadioPlayer::StartPrambors() {
 
+    // Sudah aktif: jangan membuat task radio kedua.
     if (active_.load()) {
-        return true;
+
+        if (startup_state_.load() == 1) {
+            ESP_LOGI(TAG, "Radio is already playing");
+            return true;
+        }
+
+        if (startup_state_.load() == 0) {
+            ESP_LOGW(TAG, "Radio startup is still in progress");
+        }
+
+        return false;
     }
 
     auto& audio =
@@ -242,11 +258,12 @@ bool RadioPlayer::StartPrambors() {
     }
 
     stop_requested_.store(false);
+    startup_state_.store(0);
     active_.store(true);
 
     if (xTaskCreate(
             TaskEntry,
-            "prambors_radio",
+            "dahlia_radio",
             8192,
             this,
             5,
@@ -254,6 +271,7 @@ bool RadioPlayer::StartPrambors() {
 
         task_handle_ = nullptr;
         active_.store(false);
+        startup_state_.store(-1);
 
         audio.StopRadioPlayback(true);
 
@@ -261,7 +279,37 @@ bool RadioPlayer::StartPrambors() {
         return false;
     }
 
-    return true;
+    // Tunggu sampai PCM pertama berhasil masuk ke AudioService.
+    int elapsed_ms = 0;
+
+    while (elapsed_ms < kStartupTimeoutMs) {
+
+        const int state = startup_state_.load();
+
+        if (state == 1) {
+            ESP_LOGI(TAG, "Radio startup confirmed");
+            return true;
+        }
+
+        if (state == -1) {
+            ESP_LOGE(TAG, "Radio startup failed");
+            return false;
+        }
+
+        if (!active_.load()) {
+            ESP_LOGE(TAG, "Radio task stopped during startup");
+            return false;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(100));
+        elapsed_ms += 100;
+    }
+
+    ESP_LOGE(TAG, "Radio startup timeout");
+
+    stop_requested_.store(true);
+
+    return false;
 }
 
 
@@ -275,6 +323,12 @@ void RadioPlayer::TaskEntry(void* arg) {
     auto* self = static_cast<RadioPlayer*>(arg);
 
     self->TaskLoop();
+
+    // Jika task berhenti sebelum audio pertama,
+    // tandai startup sebagai gagal.
+    if (self->startup_state_.load() == 0) {
+        self->startup_state_.store(-1);
+    }
 
     self->task_handle_ = nullptr;
     self->active_.store(false);
@@ -292,8 +346,8 @@ void RadioPlayer::TaskLoop() {
 
     esp_http_client_config_t http_cfg = {};
 
-    http_cfg.url = kPramborsUrl;
-    http_cfg.timeout_ms = 5000;
+    http_cfg.url = kRadioUrl;
+    http_cfg.timeout_ms = 10000;
     http_cfg.buffer_size = 2048;
     http_cfg.buffer_size_tx = 512;
 
@@ -303,6 +357,9 @@ void RadioPlayer::TaskLoop() {
 
     http_cfg.event_handler = HttpEventHandler;
     http_cfg.user_data = &response_headers;
+
+    // Verifikasi sertifikat HTTPS menggunakan bundle ESP-IDF.
+    http_cfg.crt_bundle_attach = esp_crt_bundle_attach;
 
     esp_http_client_handle_t client =
         esp_http_client_init(&http_cfg);
@@ -337,6 +394,10 @@ void RadioPlayer::TaskLoop() {
         for (int redirect = 0;
              redirect <= kMaxRedirects;
              redirect++) {
+
+            if (stop_requested_.load()) {
+                break;
+            }
 
             response_headers.content_type.clear();
 
@@ -409,29 +470,27 @@ void RadioPlayer::TaskLoop() {
             break;
         }
 
-        if (!connected) {
-            ESP_LOGE(TAG, "Cannot connect to Prambors MP3 stream");
+        if (stop_requested_.load()) {
             break;
         }
 
-        if (response_headers.content_type.empty()) {
-            ESP_LOGE(TAG, "Radio response has no Content-Type");
+        if (!connected) {
+            ESP_LOGE(TAG, "Cannot connect to Dahlia radio stream");
             break;
         }
 
         ESP_LOGI(
             TAG,
             "Radio Content-Type: %s",
-            response_headers.content_type.c_str()
+            response_headers.content_type.empty()
+                ? "(empty)"
+                : response_headers.content_type.c_str()
         );
 
-        const auto decoder_type =
-            SelectDecoder(response_headers.content_type.c_str());
-
-        if (decoder_type != ESP_AUDIO_SIMPLE_DEC_TYPE_MP3) {
+        if (!IsMp3ContentType(response_headers.content_type)) {
             ESP_LOGE(
                 TAG,
-                "Stream is not MP3. Content-Type: %s",
+                "Unsupported radio Content-Type: %s",
                 response_headers.content_type.c_str()
             );
             break;
@@ -439,11 +498,11 @@ void RadioPlayer::TaskLoop() {
 
         ESP_LOGI(
             TAG,
-            "Connected to Prambors MP3, length=%lld",
+            "Connected to Dahlia MP3, length=%lld",
             static_cast<long long>(content_length)
         );
 
-        // Registrasi decoder.
+        // Registrasi decoder MP3.
         if (esp_audio_dec_register_default() != ESP_AUDIO_ERR_OK) {
             ESP_LOGE(TAG, "Cannot register audio decoders");
             break;
@@ -453,13 +512,13 @@ void RadioPlayer::TaskLoop() {
 
         if (esp_audio_simple_dec_register_default() !=
             ESP_AUDIO_ERR_OK) {
+
             ESP_LOGE(TAG, "Cannot register simple decoders");
             break;
         }
 
         simple_decoder_registered = true;
 
-        // MP3 tidak membutuhkan konfigurasi AAC.
         esp_audio_simple_dec_cfg_t dec_cfg = {
             .dec_type = ESP_AUDIO_SIMPLE_DEC_TYPE_MP3,
             .dec_cfg = nullptr,
@@ -476,7 +535,7 @@ void RadioPlayer::TaskLoop() {
             break;
         }
 
-        ESP_LOGI(TAG, "Prambors MP3 decoder started");
+        ESP_LOGI(TAG, "Dahlia MP3 decoder opened");
 
         // Loop streaming radio.
         while (!stop_requested_.load() &&
@@ -566,8 +625,14 @@ void RadioPlayer::TaskLoop() {
 
                     if (esp_audio_simple_dec_get_info(
                             decoder,
-                            &info) != ESP_AUDIO_ERR_OK ||
-                        !ConvertAndQueue(
+                            &info) != ESP_AUDIO_ERR_OK) {
+
+                        ESP_LOGE(TAG, "Cannot get MP3 decoder info");
+                        stop_requested_.store(true);
+                        break;
+                    }
+
+                    if (!ConvertAndQueue(
                             audio,
                             frame.buffer,
                             frame.decoded_size,
@@ -575,9 +640,15 @@ void RadioPlayer::TaskLoop() {
                             resampler)) {
 
                         ESP_LOGE(TAG, "Could not queue radio PCM");
-
                         stop_requested_.store(true);
                         break;
+                    }
+
+                    // Sukses baru dilaporkan setelah PCM pertama
+                    // benar-benar masuk ke antrean AudioService.
+                    if (startup_state_.load() == 0) {
+                        startup_state_.store(1);
+                        ESP_LOGI(TAG, "First radio PCM queued");
                     }
                 }
 
@@ -619,7 +690,12 @@ void RadioPlayer::TaskLoop() {
     free(input_buffer);
     free(output_buffer);
 
+    // Jika belum pernah berhasil mengirim PCM, startup gagal.
+    if (startup_state_.load() == 0) {
+        startup_state_.store(-1);
+    }
+
     audio.StopRadioPlayback(true);
 
-    ESP_LOGI(TAG, "Prambors playback stopped");
+    ESP_LOGI(TAG, "Dahlia radio playback stopped");
 }
