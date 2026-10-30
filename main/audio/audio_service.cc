@@ -39,6 +39,13 @@ namespace {
 std::mutex g_encoder_mutex;
 bool g_opus_released_for_radio = false;
 
+// Penyangga radio: antrean PCM lebih dalam dan menunggu terisi dulu sebelum
+// diputar, supaya jeda jaringan/decoder singkat tidak membuat suara putus-putus.
+constexpr size_t kRadioQueueDepth = 6;
+constexpr size_t kRadioPrebufferBlocks = 3;
+std::atomic<bool> g_radio_prebuffered{false};
+std::atomic<uint32_t> g_radio_underruns{0};
+
 bool OpenOpusEncoder(void** encoder, int* frame_size, int* outbuf_size) {
     esp_opus_enc_config_t opus_enc_cfg = AS_OPUS_ENC_CONFIG();
     auto ret = esp_opus_enc_open(&opus_enc_cfg, sizeof(esp_opus_enc_config_t), encoder);
@@ -338,11 +345,33 @@ void AudioService::AudioInputTask() {
 void AudioService::AudioOutputTask() {
     while (true) {
         std::unique_lock<std::mutex> lock(audio_queue_mutex_);
+        // Radio kehabisan data: catat, lalu isi ulang penyangga sebelum lanjut.
+        if (radio_playback_active_.load() && audio_playback_queue_.empty() &&
+            g_radio_prebuffered.load()) {
+            g_radio_prebuffered.store(false);
+            const uint32_t n = ++g_radio_underruns;
+            if (n <= 20 || n % 10 == 0) {
+                ESP_LOGW(TAG, "Radio underrun #%u", static_cast<unsigned>(n));
+            }
+        }
         audio_queue_cv_.wait(lock, [this]() {
-            return !audio_playback_queue_.empty() || service_stopped_.load();
+            if (service_stopped_.load()) {
+                return true;
+            }
+            if (audio_playback_queue_.empty()) {
+                return false;
+            }
+            if (!radio_playback_active_.load()) {
+                return true;
+            }
+            return g_radio_prebuffered.load() ||
+                   audio_playback_queue_.size() >= kRadioPrebufferBlocks;
         });
         if (service_stopped_.load()) {
             break;
+        }
+        if (radio_playback_active_.load()) {
+            g_radio_prebuffered.store(true);
         }
 
         auto task = std::move(audio_playback_queue_.front());
@@ -659,6 +688,8 @@ bool AudioService::StartRadioPlayback() {
         if (radio_playback_active_.load()) {
             return true;
         }
+        g_radio_prebuffered.store(false);
+        g_radio_underruns.store(0);
         radio_restore_wake_word_ = IsWakeWordRunning();
         radio_restore_voice_processing_ = IsAudioProcessorRunning();
         radio_playback_active_.store(true);
@@ -760,7 +791,7 @@ bool AudioService::PushRadioPcm(std::vector<int16_t>&& pcm, TickType_t wait_tick
     std::unique_lock<std::mutex> lock(audio_queue_mutex_);
     auto has_room_or_stopped = [this]() {
         return service_stopped_.load() || !radio_playback_active_.load() ||
-               audio_playback_queue_.size() < 3;
+               audio_playback_queue_.size() < kRadioQueueDepth;
     };
     if (!has_room_or_stopped()) {
         if (wait_ticks == portMAX_DELAY) {
