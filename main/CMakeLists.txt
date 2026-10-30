@@ -1091,6 +1091,7 @@ idf_component_register(SRCS ${SOURCES}
                         esp_netif
                         esp_wifi
                         esp_http_server
+                        esp_http_client
                         esp_eth
                         esp_driver_gpio
                         esp_driver_uart
