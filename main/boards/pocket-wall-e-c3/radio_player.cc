@@ -1,7 +1,7 @@
-
 #include "radio_player.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
@@ -13,6 +13,7 @@
 
 #include <esp_http_client.h>
 #include <esp_log.h>
+#include <esp_system.h>
 #include <esp_crt_bundle.h>
 #include <esp_audio_simple_dec.h>
 #include <esp_audio_simple_dec_default.h>
@@ -25,17 +26,31 @@
 
 namespace {
 
-// Radio Indonesia: Elshinta FM
-// MP3 64 kbps
-constexpr char kRadioUrl[] =
-    "https://stream-ssl.arenastreaming.com:8000/jakarta";
+// Daftar stasiun, dicoba berurutan sampai ada yang berhasil tersambung.
+// Semua harus MP3. Utamakan http:// (tanpa TLS) karena handshake TLS
+// membutuhkan RAM besar di ESP32-C3 dan sebelumnya gagal.
+struct Station {
+    const char* name;
+    const char* url;
+};
+
+constexpr Station kStations[] = {
+    // MP3, http (tanpa TLS)
+    {"I-Radio Jakarta",     "http://stream.radiojar.com/4ywdgup3bnzuv"},
+    {"Hard Rock FM 87.6",   "http://stream.radiojar.com/7csmg90fuqruv"},
+    // MP3 192 kbps, paling berat, hanya cadangan
+    {"Radio Dangdut 97.1",  "http://202.147.199.99:8000/;"},
+    // MP3 64 kbps, https: cadangan terakhir
+    {"Elshinta FM",         "https://stream-ssl.arenastreaming.com:8000/jakarta"},
+};
+constexpr size_t kStationCount = sizeof(kStations) / sizeof(kStations[0]);
 
 constexpr size_t kHttpReadSize = 1024;
 constexpr size_t kDecoderOutputSize = 8192;
-
 constexpr int kRadioOutputRate = 24000;
 constexpr int kMaxRedirects = 5;
-constexpr int kStartupTimeoutMs = 20000;
+constexpr int kConnectTimeoutMs = 8000;
+constexpr int kStartupTimeoutMs = 30000;
 
 struct HttpResponseHeaders {
     std::string content_type;
@@ -49,10 +64,7 @@ esp_err_t HttpEventHandler(esp_http_client_event_t* event) {
     if (event->event_id == HTTP_EVENT_ON_HEADER &&
         event->header_key != nullptr &&
         event->header_value != nullptr) {
-
-        auto* headers =
-            static_cast<HttpResponseHeaders*>(event->user_data);
-
+        auto* headers = static_cast<HttpResponseHeaders*>(event->user_data);
         if (strcasecmp(event->header_key, "Content-Type") == 0) {
             headers->content_type = event->header_value;
         }
@@ -63,7 +75,6 @@ esp_err_t HttpEventHandler(esp_http_client_event_t* event) {
 
 bool IsMp3ContentType(const std::string& content_type) {
     std::string value = content_type;
-
     std::transform(
         value.begin(),
         value.end(),
@@ -79,6 +90,101 @@ bool IsMp3ContentType(const std::string& content_type) {
            value.find("application/octet-stream") != std::string::npos;
 }
 
+// Membuka satu stasiun: ikuti redirect, cek status 200/206 dan Content-Type MP3.
+// Berhasil: mengembalikan handle HTTP yang siap dibaca.
+// Gagal: semua resource dibersihkan dan mengembalikan nullptr.
+esp_http_client_handle_t ConnectStation(
+    const Station& station,
+    HttpResponseHeaders& headers,
+    const std::atomic<bool>& stop_requested) {
+
+    esp_http_client_config_t http_cfg = {};
+    http_cfg.url = station.url;
+    http_cfg.timeout_ms = kConnectTimeoutMs;
+    http_cfg.buffer_size = 2048;
+    http_cfg.buffer_size_tx = 512;
+    // Redirect ditangani manual.
+    http_cfg.disable_auto_redirect = true;
+    http_cfg.max_redirection_count = kMaxRedirects;
+    http_cfg.event_handler = HttpEventHandler;
+    http_cfg.user_data = &headers;
+    // Hanya dipakai kalau URL atau redirect-nya https.
+    http_cfg.crt_bundle_attach = esp_crt_bundle_attach;
+
+    esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
+    if (client == nullptr) {
+        ESP_LOGE(TAG, "Cannot init HTTP client");
+        return nullptr;
+    }
+
+    bool connected = false;
+
+    for (int redirect = 0; redirect <= kMaxRedirects; redirect++) {
+        if (stop_requested.load()) {
+            break;
+        }
+
+        headers.content_type.clear();
+
+        const esp_err_t open_err = esp_http_client_open(client, 0);
+        if (open_err != ESP_OK) {
+            ESP_LOGE(TAG, "HTTP open failed: %s", esp_err_to_name(open_err));
+            break;
+        }
+
+        const int64_t content_length = esp_http_client_fetch_headers(client);
+        const int status = esp_http_client_get_status_code(client);
+        ESP_LOGI(TAG, "HTTP status: %d, length=%lld", status,
+                 static_cast<long long>(content_length));
+
+        if (status == 301 || status == 302 || status == 303 ||
+            status == 307 || status == 308) {
+            ESP_LOGW(TAG, "Radio redirect %d/%d", redirect + 1, kMaxRedirects);
+
+            if (redirect >= kMaxRedirects) {
+                ESP_LOGE(TAG, "Too many radio redirects");
+                esp_http_client_close(client);
+                break;
+            }
+
+            const esp_err_t redirect_err = esp_http_client_set_redirection(client);
+            esp_http_client_close(client);
+
+            if (redirect_err != ESP_OK) {
+                ESP_LOGE(TAG, "Cannot follow redirect: %s",
+                         esp_err_to_name(redirect_err));
+                break;
+            }
+            continue;
+        }
+
+        if (status == 200 || status == 206) {
+            connected = true;
+        } else {
+            ESP_LOGE(TAG, "Radio HTTP status error: %d", status);
+            esp_http_client_close(client);
+        }
+        break;
+    }
+
+    if (!connected) {
+        esp_http_client_cleanup(client);
+        return nullptr;
+    }
+
+    ESP_LOGI(TAG, "Radio Content-Type: %s",
+             headers.content_type.empty() ? "(empty)" : headers.content_type.c_str());
+
+    if (!IsMp3ContentType(headers.content_type)) {
+        ESP_LOGE(TAG, "Unsupported radio Content-Type, skipping station");
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return nullptr;
+    }
+
+    return client;
+}
+
 bool ConvertAndQueue(
     AudioService& audio,
     const uint8_t* pcm_bytes,
@@ -91,7 +197,6 @@ bool ConvertAndQueue(
         info.channel > 2 ||
         info.sample_rate == 0 ||
         byte_count < sizeof(int16_t)) {
-
         ESP_LOGE(
             TAG,
             "Unsupported PCM: %u bit, %u ch, %lu Hz",
@@ -99,15 +204,11 @@ bool ConvertAndQueue(
             static_cast<unsigned>(info.channel),
             static_cast<unsigned long>(info.sample_rate)
         );
-
         return false;
     }
 
-    const auto* input =
-        reinterpret_cast<const int16_t*>(pcm_bytes);
-
-    const size_t input_samples =
-        byte_count / sizeof(int16_t);
+    const auto* input = reinterpret_cast<const int16_t*>(pcm_bytes);
+    const size_t input_samples = byte_count / sizeof(int16_t);
 
     std::vector<int16_t> mono;
 
@@ -122,7 +223,6 @@ bool ConvertAndQueue(
             const int32_t mixed =
                 static_cast<int32_t>(input[i * 2]) +
                 static_cast<int32_t>(input[i * 2 + 1]);
-
             mono[i] = static_cast<int16_t>(mixed / 2);
         }
     }
@@ -133,7 +233,6 @@ bool ConvertAndQueue(
 
     // Resampling tetap 24 kHz.
     if (info.sample_rate != kRadioOutputRate) {
-
         if (resampler == nullptr) {
             esp_ae_rate_cvt_cfg_t cfg = {
                 .src_rate = info.sample_rate,
@@ -144,9 +243,7 @@ bool ConvertAndQueue(
                 .perf_type = ESP_AE_RATE_CVT_PERF_TYPE_SPEED,
             };
 
-            const auto err =
-                esp_ae_rate_cvt_open(&cfg, &resampler);
-
+            const auto err = esp_ae_rate_cvt_open(&cfg, &resampler);
             if (err != ESP_AE_ERR_OK || resampler == nullptr) {
                 ESP_LOGE(TAG, "Cannot create resampler: %d", err);
                 return false;
@@ -154,12 +251,10 @@ bool ConvertAndQueue(
         }
 
         uint32_t max_output = 0;
-
         if (esp_ae_rate_cvt_get_max_out_sample_num(
                 resampler,
                 mono.size(),
                 &max_output) != ESP_AE_ERR_OK) {
-
             ESP_LOGE(TAG, "Cannot get resampler output size");
             return false;
         }
@@ -173,7 +268,6 @@ bool ConvertAndQueue(
                 mono.size(),
                 reinterpret_cast<esp_ae_sample_t>(converted.data()),
                 &actual_output) != ESP_AE_ERR_OK) {
-
             ESP_LOGE(TAG, "Resampling failed");
             return false;
         }
@@ -186,23 +280,18 @@ bool ConvertAndQueue(
     size_t offset = 0;
 
     while (offset < mono.size()) {
-
         if (!audio.IsRadioPlaybackActive()) {
             return false;
         }
 
-        const size_t count =
-            std::min<size_t>(5760, mono.size() - offset);
+        const size_t count = std::min<size_t>(5760, mono.size() - offset);
 
         std::vector<int16_t> block(
             mono.begin() + offset,
             mono.begin() + offset + count
         );
 
-        if (!audio.PushRadioPcm(
-                std::move(block),
-                pdMS_TO_TICKS(500))) {
-
+        if (!audio.PushRadioPcm(std::move(block), pdMS_TO_TICKS(500))) {
             ESP_LOGE(TAG, "Cannot push PCM to AudioService");
             return false;
         }
@@ -213,21 +302,16 @@ bool ConvertAndQueue(
     return true;
 }
 
-} // namespace
-
+}  // namespace
 
 RadioPlayer::RadioPlayer() = default;
-
 
 RadioPlayer::~RadioPlayer() {
     RequestStop();
 }
 
-
 bool RadioPlayer::StartRadio() {
-
     if (active_.load()) {
-
         if (startup_state_.load() == 1) {
             ESP_LOGI(TAG, "Radio is already playing");
             return true;
@@ -240,8 +324,7 @@ bool RadioPlayer::StartRadio() {
         return false;
     }
 
-    auto& audio =
-        Application::GetInstance().GetAudioService();
+    auto& audio = Application::GetInstance().GetAudioService();
 
     if (!audio.StartRadioPlayback()) {
         ESP_LOGE(TAG, "AudioService refused radio playback");
@@ -259,13 +342,10 @@ bool RadioPlayer::StartRadio() {
             this,
             5,
             &task_handle_) != pdPASS) {
-
         task_handle_ = nullptr;
         active_.store(false);
         startup_state_.store(-1);
-
         audio.StopRadioPlayback(true);
-
         ESP_LOGE(TAG, "Cannot create radio task");
         return false;
     }
@@ -273,7 +353,6 @@ bool RadioPlayer::StartRadio() {
     int elapsed_ms = 0;
 
     while (elapsed_ms < kStartupTimeoutMs) {
-
         const int state = startup_state_.load();
 
         if (state == 1) {
@@ -297,20 +376,15 @@ bool RadioPlayer::StartRadio() {
 
     ESP_LOGE(TAG, "Radio startup timeout");
     stop_requested_.store(true);
-
     return false;
 }
-
 
 void RadioPlayer::RequestStop() {
     stop_requested_.store(true);
 }
 
-
 void RadioPlayer::TaskEntry(void* arg) {
-
     auto* self = static_cast<RadioPlayer*>(arg);
-
     self->TaskLoop();
 
     if (self->startup_state_.load() == 0) {
@@ -319,199 +393,73 @@ void RadioPlayer::TaskEntry(void* arg) {
 
     self->task_handle_ = nullptr;
     self->active_.store(false);
-
     vTaskDelete(nullptr);
 }
 
-
 void RadioPlayer::TaskLoop() {
-
-    auto& audio =
-        Application::GetInstance().GetAudioService();
+    auto& audio = Application::GetInstance().GetAudioService();
 
     HttpResponseHeaders response_headers;
 
-    esp_http_client_config_t http_cfg = {};
-
-    http_cfg.url = kRadioUrl;
-    http_cfg.timeout_ms = 10000;
-    http_cfg.buffer_size = 2048;
-    http_cfg.buffer_size_tx = 512;
-
-    // Redirect ditangani manual.
-    http_cfg.disable_auto_redirect = true;
-    http_cfg.max_redirection_count = kMaxRedirects;
-
-    http_cfg.event_handler = HttpEventHandler;
-    http_cfg.user_data = &response_headers;
-
-    // HTTPS certificate verification.
-    http_cfg.crt_bundle_attach = esp_crt_bundle_attach;
-
-    esp_http_client_handle_t client =
-        esp_http_client_init(&http_cfg);
-
+    esp_http_client_handle_t client = nullptr;
     esp_audio_simple_dec_handle_t decoder = nullptr;
     esp_ae_rate_cvt_handle_t resampler = nullptr;
 
     bool decoder_registered = false;
     bool simple_decoder_registered = false;
 
-    uint8_t* input_buffer =
-        static_cast<uint8_t*>(malloc(kHttpReadSize));
-
-    uint8_t* output_buffer =
-        static_cast<uint8_t*>(malloc(kDecoderOutputSize));
+    uint8_t* input_buffer = static_cast<uint8_t*>(malloc(kHttpReadSize));
+    uint8_t* output_buffer = static_cast<uint8_t*>(malloc(kDecoderOutputSize));
 
     do {
-
-        if (client == nullptr ||
-            input_buffer == nullptr ||
-            output_buffer == nullptr) {
-
+        if (input_buffer == nullptr || output_buffer == nullptr) {
             ESP_LOGE(TAG, "Not enough memory to start radio");
             break;
         }
 
-        bool connected = false;
-        int status = -1;
-        int64_t content_length = -1;
-
-        // Buka koneksi dan ikuti redirect.
-        for (int redirect = 0;
-             redirect <= kMaxRedirects;
-             redirect++) {
-
+        // Coba stasiun satu per satu sampai ada yang tersambung.
+        for (size_t i = 0; i < kStationCount; i++) {
             if (stop_requested_.load()) {
                 break;
             }
 
-            response_headers.content_type.clear();
+            ESP_LOGI(TAG, "Trying station %u/%u: %s (free heap %u)",
+                     static_cast<unsigned>(i + 1),
+                     static_cast<unsigned>(kStationCount),
+                     kStations[i].name,
+                     static_cast<unsigned>(esp_get_free_heap_size()));
 
-            const esp_err_t open_err =
-                esp_http_client_open(client, 0);
-
-            if (open_err != ESP_OK) {
-                ESP_LOGE(
-                    TAG,
-                    "HTTP open failed: %s",
-                    esp_err_to_name(open_err)
-                );
+            client = ConnectStation(kStations[i], response_headers, stop_requested_);
+            if (client != nullptr) {
+                ESP_LOGI(TAG, "Connected to %s", kStations[i].name);
                 break;
             }
 
-            content_length =
-                esp_http_client_fetch_headers(client);
-
-            status =
-                esp_http_client_get_status_code(client);
-
-            ESP_LOGI(TAG, "HTTP status: %d", status);
-
-            if (status == 301 ||
-                status == 302 ||
-                status == 303 ||
-                status == 307 ||
-                status == 308) {
-
-                ESP_LOGW(
-                    TAG,
-                    "Radio redirect %d/%d",
-                    redirect + 1,
-                    kMaxRedirects
-                );
-
-                if (redirect >= kMaxRedirects) {
-                    ESP_LOGE(TAG, "Too many radio redirects");
-                    esp_http_client_close(client);
-                    break;
-                }
-
-                const esp_err_t redirect_err =
-                    esp_http_client_set_redirection(client);
-
-                esp_http_client_close(client);
-
-                if (redirect_err != ESP_OK) {
-                    ESP_LOGE(
-                        TAG,
-                        "Cannot follow redirect: %s",
-                        esp_err_to_name(redirect_err)
-                    );
-                    break;
-                }
-
-                continue;
-            }
-
-            if (status == 200 || status == 206) {
-                connected = true;
-            } else {
-                ESP_LOGE(TAG, "Radio HTTP status error: %d", status);
-            }
-
-            break;
+            ESP_LOGW(TAG, "Station %s failed, trying next", kStations[i].name);
         }
 
         if (stop_requested_.load()) {
             break;
         }
 
-        if (!connected) {
-            ESP_LOGE(TAG, "Cannot connect to radio stream");
+        if (client == nullptr) {
+            ESP_LOGE(TAG, "Cannot connect to any radio station");
             break;
         }
-
-        ESP_LOGI(
-            TAG,
-            "Radio Content-Type: %s",
-            response_headers.content_type.empty()
-                ? "(empty)"
-                : response_headers.content_type.c_str()
-        );
-
-        if (!IsMp3ContentType(response_headers.content_type)) {
-            ESP_LOGE(
-                TAG,
-                "Unsupported radio Content-Type: %s",
-                response_headers.content_type.c_str()
-            );
-            break;
-        }
-
-        ESP_LOGI(
-            TAG,
-            "Connected to Indonesian MP3 radio, length=%lld",
-            static_cast<long long>(content_length)
-        );
 
         // Registrasi decoder MP3.
-        const auto register_err =
-            esp_audio_dec_register_default();
-
+        const auto register_err = esp_audio_dec_register_default();
         if (register_err != ESP_AUDIO_ERR_OK) {
-            ESP_LOGE(
-                TAG,
-                "Cannot register audio decoders: %d",
-                register_err
-            );
+            ESP_LOGE(TAG, "Cannot register audio decoders: %d", register_err);
             break;
         }
-
         decoder_registered = true;
 
-        const auto simple_register_err =
-            esp_audio_simple_dec_register_default();
-
+        const auto simple_register_err = esp_audio_simple_dec_register_default();
         if (simple_register_err != ESP_AUDIO_ERR_OK) {
-            ESP_LOGE(
-                TAG,
-                "Cannot register simple decoders: %d",
-                simple_register_err
-            );
+            ESP_LOGE(TAG, "Cannot register simple decoders: %d", simple_register_err);
             break;
         }
-
         simple_decoder_registered = true;
 
         esp_audio_simple_dec_cfg_t dec_cfg = {
@@ -521,32 +469,21 @@ void RadioPlayer::TaskLoop() {
             .use_frame_dec = false,
         };
 
-        const auto decoder_open_err =
-            esp_audio_simple_dec_open(&dec_cfg, &decoder);
-
-        if (decoder_open_err != ESP_AUDIO_ERR_OK ||
-            decoder == nullptr) {
-
-            ESP_LOGE(
-                TAG,
-                "Cannot open MP3 decoder: %d",
-                decoder_open_err
-            );
+        const auto decoder_open_err = esp_audio_simple_dec_open(&dec_cfg, &decoder);
+        if (decoder_open_err != ESP_AUDIO_ERR_OK || decoder == nullptr) {
+            ESP_LOGE(TAG, "Cannot open MP3 decoder: %d", decoder_open_err);
             break;
         }
 
         ESP_LOGI(TAG, "MP3 decoder opened successfully");
 
         // Loop streaming.
-        while (!stop_requested_.load() &&
-               audio.IsRadioPlaybackActive()) {
-
-            const int read =
-                esp_http_client_read(
-                    client,
-                    reinterpret_cast<char*>(input_buffer),
-                    kHttpReadSize
-                );
+        while (!stop_requested_.load() && audio.IsRadioPlaybackActive()) {
+            const int read = esp_http_client_read(
+                client,
+                reinterpret_cast<char*>(input_buffer),
+                kHttpReadSize
+            );
 
             if (read < 0) {
                 ESP_LOGE(TAG, "Radio stream read failed: %d", read);
@@ -557,8 +494,6 @@ void RadioPlayer::TaskLoop() {
                 vTaskDelay(pdMS_TO_TICKS(20));
                 continue;
             }
-
-            ESP_LOGD(TAG, "Received %d MP3 bytes", read);
 
             esp_audio_simple_dec_raw_t raw = {
                 .buffer = input_buffer,
@@ -578,30 +513,15 @@ void RadioPlayer::TaskLoop() {
                     .decoded_size = 0,
                 };
 
-                const auto dec_ret =
-                    esp_audio_simple_dec_process(
-                        decoder,
-                        &raw,
-                        &frame
-                    );
+                const auto dec_ret = esp_audio_simple_dec_process(decoder, &raw, &frame);
 
                 if (dec_ret == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH &&
                     frame.needed_size > kDecoderOutputSize) {
-
-                    uint8_t* bigger =
-                        static_cast<uint8_t*>(
-                            realloc(
-                                output_buffer,
-                                frame.needed_size
-                            )
-                        );
+                    uint8_t* bigger = static_cast<uint8_t*>(
+                        realloc(output_buffer, frame.needed_size));
 
                     if (bigger == nullptr) {
-                        ESP_LOGE(
-                            TAG,
-                            "Cannot allocate decoder output buffer"
-                        );
-
+                        ESP_LOGE(TAG, "Cannot allocate decoder output buffer");
                         stop_requested_.store(true);
                         break;
                     }
@@ -611,45 +531,22 @@ void RadioPlayer::TaskLoop() {
                 }
 
                 if (dec_ret != ESP_AUDIO_ERR_OK) {
-                    ESP_LOGE(
-                        TAG,
-                        "MP3 decode error: %d",
-                        dec_ret
-                    );
-
+                    ESP_LOGE(TAG, "MP3 decode error: %d", dec_ret);
                     stop_requested_.store(true);
                     break;
                 }
 
                 if (frame.decoded_size > 0) {
-
                     esp_audio_simple_dec_info_t info = {};
 
-                    if (esp_audio_simple_dec_get_info(
-                            decoder,
-                            &info) != ESP_AUDIO_ERR_OK) {
-
+                    if (esp_audio_simple_dec_get_info(decoder, &info) != ESP_AUDIO_ERR_OK) {
                         ESP_LOGE(TAG, "Cannot get MP3 decoder info");
                         stop_requested_.store(true);
                         break;
                     }
 
-                    ESP_LOGD(
-                        TAG,
-                        "MP3 decoded: %lu bytes, %u Hz, %u ch, %u bit",
-                        static_cast<unsigned long>(frame.decoded_size),
-                        static_cast<unsigned>(info.sample_rate),
-                        static_cast<unsigned>(info.channel),
-                        static_cast<unsigned>(info.bits_per_sample)
-                    );
-
-                    if (!ConvertAndQueue(
-                            audio,
-                            frame.buffer,
-                            frame.decoded_size,
-                            info,
-                            resampler)) {
-
+                    if (!ConvertAndQueue(audio, frame.buffer, frame.decoded_size,
+                                         info, resampler)) {
                         ESP_LOGE(TAG, "Could not queue radio PCM");
                         stop_requested_.store(true);
                         break;
@@ -670,9 +567,7 @@ void RadioPlayer::TaskLoop() {
                 raw.consumed = 0;
             }
         }
-
     } while (false);
-
 
     // Bersihkan resource.
     if (client != nullptr) {
@@ -704,6 +599,5 @@ void RadioPlayer::TaskLoop() {
     }
 
     audio.StopRadioPlayback(true);
-
     ESP_LOGI(TAG, "Radio playback stopped");
 }
