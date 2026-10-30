@@ -15,6 +15,8 @@
 #include <esp_log.h>
 #include <esp_system.h>
 #include <esp_heap_caps.h>
+#include <esp_timer.h>
+#include <esp_wifi.h>
 #include <esp_crt_bundle.h>
 #include <esp_audio_simple_dec.h>
 #include <esp_audio_simple_dec_default.h>
@@ -416,6 +418,9 @@ void RadioPlayer::TaskLoop() {
 
     HttpResponseHeaders response_headers;
 
+    // Matikan hemat daya WiFi selama radio supaya paket tidak tertunda.
+    esp_wifi_set_ps(WIFI_PS_NONE);
+
     esp_http_client_handle_t client = nullptr;
     esp_audio_simple_dec_handle_t decoder = nullptr;
     esp_ae_rate_cvt_handle_t resampler = nullptr;
@@ -496,13 +501,39 @@ void RadioPlayer::TaskLoop() {
                  static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
         bool logged_first_bytes = false;
 
+        // Statistik 5 detik untuk mendiagnosis suara putus-putus.
+        int64_t stat_window_start_us = esp_timer_get_time();
+        int64_t stat_audio_us = 0;
+        int64_t stat_dec_us = 0;
+        int64_t stat_max_read_us = 0;
+        unsigned stat_rate = 0;
+        unsigned stat_ch = 0;
+
         // Loop streaming.
         while (!stop_requested_.load() && audio.IsRadioPlaybackActive()) {
+            const int64_t read_t0 = esp_timer_get_time();
             const int read = esp_http_client_read(
                 client,
                 reinterpret_cast<char*>(input_buffer),
                 kHttpReadSize
             );
+            const int64_t read_us = esp_timer_get_time() - read_t0;
+            if (read_us > stat_max_read_us) {
+                stat_max_read_us = read_us;
+            }
+
+            if (esp_timer_get_time() - stat_window_start_us >= 5000000) {
+                ESP_LOGI(TAG, "Radio stats 5s: audio=%lld ms, decode=%lld ms, max_read=%lld ms, %u Hz %u ch, free heap %u",
+                         static_cast<long long>(stat_audio_us / 1000),
+                         static_cast<long long>(stat_dec_us / 1000),
+                         static_cast<long long>(stat_max_read_us / 1000),
+                         stat_rate, stat_ch,
+                         static_cast<unsigned>(esp_get_free_heap_size()));
+                stat_window_start_us = esp_timer_get_time();
+                stat_audio_us = 0;
+                stat_dec_us = 0;
+                stat_max_read_us = 0;
+            }
 
             if (read < 0) {
                 ESP_LOGE(TAG, "Radio stream read failed: %d", read);
@@ -542,7 +573,9 @@ void RadioPlayer::TaskLoop() {
                     .decoded_size = 0,
                 };
 
+                const int64_t dec_t0 = esp_timer_get_time();
                 const auto dec_ret = esp_audio_simple_dec_process(decoder, &raw, &frame);
+                stat_dec_us += esp_timer_get_time() - dec_t0;
 
                 if (dec_ret == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH &&
                     frame.needed_size > kDecoderOutputSize) {
@@ -576,6 +609,13 @@ void RadioPlayer::TaskLoop() {
                         ESP_LOGE(TAG, "Cannot get MP3 decoder info");
                         stop_requested_.store(true);
                         break;
+                    }
+
+                    if (info.sample_rate > 0 && info.channel > 0) {
+                        stat_audio_us += static_cast<int64_t>(frame.decoded_size) * 1000000LL /
+                                         (static_cast<int64_t>(info.sample_rate) * info.channel * 2);
+                        stat_rate = info.sample_rate;
+                        stat_ch = info.channel;
                     }
 
                     if (!ConvertAndQueue(audio, frame.buffer, frame.decoded_size,
