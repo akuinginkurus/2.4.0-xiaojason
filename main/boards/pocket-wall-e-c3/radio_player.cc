@@ -55,6 +55,9 @@ constexpr int kRadioOutputRate = 24000;
 constexpr int kMaxRedirects = 5;
 constexpr int kConnectTimeoutMs = 8000;
 constexpr int kStartupTimeoutMs = 30000;
+// Blok RAM cadangan untuk resampler (butuh ~10 KB berurutan). Dialokasikan di awal,
+// dilepas tepat sebelum resampler dibuat, supaya tidak habis dimakan decoder MP3.
+constexpr size_t kResamplerReserveSize = 13 * 1024;
 
 struct HttpResponseHeaders {
     std::string content_type;
@@ -194,7 +197,8 @@ bool ConvertAndQueue(
     const uint8_t* pcm_bytes,
     size_t byte_count,
     const esp_audio_simple_dec_info_t& info,
-    esp_ae_rate_cvt_handle_t& resampler) {
+    esp_ae_rate_cvt_handle_t& resampler,
+    void** resampler_reserve) {
 
     if (info.bits_per_sample != 16 ||
         info.channel == 0 ||
@@ -238,6 +242,12 @@ bool ConvertAndQueue(
     // Resampling tetap 24 kHz.
     if (info.sample_rate != kRadioOutputRate) {
         if (resampler == nullptr) {
+            // Lepas cadangan tepat sebelum resampler membutuhkan RAM.
+            if (resampler_reserve != nullptr && *resampler_reserve != nullptr) {
+                free(*resampler_reserve);
+                *resampler_reserve = nullptr;
+            }
+
             esp_ae_rate_cvt_cfg_t cfg = {
                 .src_rate = info.sample_rate,
                 .dest_rate = kRadioOutputRate,
@@ -247,7 +257,18 @@ bool ConvertAndQueue(
                 .perf_type = ESP_AE_RATE_CVT_PERF_TYPE_SPEED,
             };
 
-            const auto err = esp_ae_rate_cvt_open(&cfg, &resampler);
+            auto err = esp_ae_rate_cvt_open(&cfg, &resampler);
+            for (int attempt = 1;
+                 attempt <= 3 && (err != ESP_AE_ERR_OK || resampler == nullptr);
+                 attempt++) {
+                ESP_LOGW(TAG, "Resampler alloc failed (%d), retry %d (free heap %u, largest block %u)",
+                         err, attempt,
+                         static_cast<unsigned>(esp_get_free_heap_size()),
+                         static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+                vTaskDelay(pdMS_TO_TICKS(150));
+                resampler = nullptr;
+                err = esp_ae_rate_cvt_open(&cfg, &resampler);
+            }
             if (err != ESP_AE_ERR_OK || resampler == nullptr) {
                 ESP_LOGE(TAG, "Cannot create resampler: %d", err);
                 return false;
@@ -430,6 +451,8 @@ void RadioPlayer::TaskLoop() {
 
     uint8_t* input_buffer = static_cast<uint8_t*>(malloc(kHttpReadSize));
     uint8_t* output_buffer = static_cast<uint8_t*>(malloc(kDecoderOutputSize));
+    // Cadangan RAM untuk resampler (boleh gagal; resampler tetap akan mencoba sendiri).
+    void* resampler_reserve = malloc(kResamplerReserveSize);
 
     do {
         if (input_buffer == nullptr || output_buffer == nullptr) {
@@ -619,7 +642,7 @@ void RadioPlayer::TaskLoop() {
                     }
 
                     if (!ConvertAndQueue(audio, frame.buffer, frame.decoded_size,
-                                         info, resampler)) {
+                                         info, resampler, &resampler_reserve)) {
                         ESP_LOGE(TAG, "Could not queue radio PCM");
                         stop_requested_.store(true);
                         break;
@@ -666,6 +689,7 @@ void RadioPlayer::TaskLoop() {
 
     free(input_buffer);
     free(output_buffer);
+    free(resampler_reserve);
 
     if (startup_state_.load() == 0) {
         startup_state_.store(-1);
