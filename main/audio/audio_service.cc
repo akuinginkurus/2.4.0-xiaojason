@@ -1,5 +1,6 @@
 #include "audio_service.h"
 #include <esp_log.h>
+#include <esp_system.h>
 #include <cstring>
 
 #define RATE_CVT_CFG(_src_rate, _dest_rate, _channel)        \
@@ -29,6 +30,28 @@
 #endif
 
 #define TAG "AudioService"
+
+namespace {
+
+// Selama radio diputar, encoder dan decoder Opus dilepas supaya RAM cukup untuk
+// decoder MP3 (ESP32-C3 hanya punya sekitar 35 KB RAM bebas). Encoder dibuka lagi
+// saat radio berhenti; decoder dibuka lagi otomatis oleh SetDecodeSampleRate().
+std::mutex g_encoder_mutex;
+bool g_opus_released_for_radio = false;
+
+bool OpenOpusEncoder(void** encoder, int* frame_size, int* outbuf_size) {
+    esp_opus_enc_config_t opus_enc_cfg = AS_OPUS_ENC_CONFIG();
+    auto ret = esp_opus_enc_open(&opus_enc_cfg, sizeof(esp_opus_enc_config_t), encoder);
+    if (*encoder == nullptr) {
+        ESP_LOGE(TAG, "Failed to create audio encoder, error code: %d", ret);
+        return false;
+    }
+    esp_opus_enc_get_frame_size(*encoder, frame_size, outbuf_size);
+    *frame_size = *frame_size / sizeof(int16_t);
+    return true;
+}
+
+}  // namespace
 
 AudioService::AudioService() {
     event_group_ = xEventGroupCreate();
@@ -403,25 +426,30 @@ void AudioService::OpusCodecTask() {
                 };
                 esp_audio_dec_info_t dec_info = {};
                 std::unique_lock<std::mutex> decoder_lock(decoder_mutex_);
-                auto ret = esp_opus_dec_decode(opus_decoder_, &raw, &out_frame, &dec_info);
-                decoder_lock.unlock();
-                if (ret == ESP_AUDIO_ERR_OK) {
-                    task->pcm.resize(out_frame.decoded_size / sizeof(int16_t));
-                    if (decoder_sample_rate_ != codec_->output_sample_rate() && output_resampler_ != nullptr) {
-                        uint32_t target_size = 0;
-                        esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_, task->pcm.size(), &target_size);
-                        std::vector<int16_t> resampled(target_size);
-                        uint32_t actual_output = target_size;
-                        esp_ae_rate_cvt_process(output_resampler_, (esp_ae_sample_t)task->pcm.data(), task->pcm.size(),
-                                                (esp_ae_sample_t)resampled.data(), &actual_output);
-                        resampled.resize(actual_output);
-                        task->pcm = std::move(resampled);
-                    }
-                    decoded = true;
+                if (opus_decoder_ == nullptr) {
+                    // Decoder sedang dilepas untuk radio: buang paket ini.
+                    decoder_lock.unlock();
                 } else {
-                    ESP_LOGE(TAG, "Failed to decode audio after resize, error code: %d", ret);
+                    auto ret = esp_opus_dec_decode(opus_decoder_, &raw, &out_frame, &dec_info);
+                    decoder_lock.unlock();
+                    if (ret == ESP_AUDIO_ERR_OK) {
+                        task->pcm.resize(out_frame.decoded_size / sizeof(int16_t));
+                        if (decoder_sample_rate_ != codec_->output_sample_rate() && output_resampler_ != nullptr) {
+                            uint32_t target_size = 0;
+                            esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_, task->pcm.size(), &target_size);
+                            std::vector<int16_t> resampled(target_size);
+                            uint32_t actual_output = target_size;
+                            esp_ae_rate_cvt_process(output_resampler_, (esp_ae_sample_t)task->pcm.data(), task->pcm.size(),
+                                                    (esp_ae_sample_t)resampled.data(), &actual_output);
+                            resampled.resize(actual_output);
+                            task->pcm = std::move(resampled);
+                        }
+                        decoded = true;
+                    } else {
+                        ESP_LOGE(TAG, "Failed to decode audio after resize, error code: %d", ret);
+                    }
                 }
-            } else {
+            } else if (!radio_playback_active_.load()) {
                 ESP_LOGE(TAG, "Audio decoder is not configured");
             }
 
@@ -451,6 +479,16 @@ void AudioService::OpusCodecTask() {
             packet->sample_rate = 16000;
             packet->timestamp = task->timestamp;
 
+            std::unique_lock<std::mutex> encoder_lock(g_encoder_mutex);
+            // Kalau encoder dilepas untuk radio dan radio sudah berhenti tetapi
+            // pembukaan ulang sebelumnya gagal, coba lagi di sini.
+            if (opus_encoder_ == nullptr && g_opus_released_for_radio &&
+                !radio_playback_active_.load()) {
+                if (OpenOpusEncoder(&opus_encoder_, &encoder_frame_size_, &encoder_outbuf_size_)) {
+                    g_opus_released_for_radio = false;
+                }
+            }
+
             if (opus_encoder_ != nullptr && task->pcm.size() == encoder_frame_size_) {
                 std::vector<uint8_t> buf(encoder_outbuf_size_);
                 esp_audio_enc_in_frame_t in = {
@@ -463,6 +501,7 @@ void AudioService::OpusCodecTask() {
                     .encoded_bytes = 0,
                 };
                 auto ret = esp_opus_enc_process(opus_encoder_, &in, &out);
+                encoder_lock.unlock();
                 if (ret == ESP_AUDIO_ERR_OK) {
                     packet->payload.assign(buf.data(), buf.data() + out.encoded_bytes);
 
@@ -488,8 +527,11 @@ void AudioService::OpusCodecTask() {
                     ESP_LOGE(TAG, "Failed to encode audio, error code: %d", ret);
                 }
             } else {
-                ESP_LOGE(TAG, "Failed to encode audio: encoder not configured or invalid frame size (got %u, expected %u)",
-                         task->pcm.size(), encoder_frame_size_);
+                encoder_lock.unlock();
+                if (!radio_playback_active_.load()) {
+                    ESP_LOGE(TAG, "Failed to encode audio: encoder not configured or invalid frame size (got %u, expected %u)",
+                             task->pcm.size(), encoder_frame_size_);
+                }
             }
             lock.lock();
         }
@@ -500,6 +542,10 @@ void AudioService::OpusCodecTask() {
 
 void AudioService::SetDecodeSampleRate(int sample_rate, int frame_duration) {
     if (decoder_sample_rate_ == sample_rate && decoder_duration_ms_ == frame_duration) {
+        return;
+    }
+    // Selama radio, decoder Opus sengaja dilepas; jangan dibuka lagi.
+    if (radio_playback_active_.load()) {
         return;
     }
     std::unique_lock<std::mutex> decoder_lock(decoder_mutex_);
@@ -619,6 +665,7 @@ bool AudioService::StartRadioPlayback() {
         ++playback_generation_;
         audio_decode_queue_.clear();
         audio_playback_queue_.clear();
+        audio_encode_queue_.clear();
         timestamp_queue_.clear();
         // Radio is continuous; short network gaps must not signal TTS drained.
         playback_drained_notified_ = true;
@@ -627,6 +674,31 @@ bool AudioService::StartRadioPlayback() {
 
     EnableVoiceProcessing(false);
     EnableWakeWordDetection(false);
+
+    // Lepas encoder dan decoder Opus agar RAM cukup untuk decoder MP3.
+    // (Kunci encoder dan decoder diambil di luar audio_queue_mutex_.)
+    size_t free_before = esp_get_free_heap_size();
+    {
+        std::lock_guard<std::mutex> encoder_lock(g_encoder_mutex);
+        if (opus_encoder_ != nullptr) {
+            esp_opus_enc_close(opus_encoder_);
+            opus_encoder_ = nullptr;
+        }
+        g_opus_released_for_radio = true;
+    }
+    {
+        std::lock_guard<std::mutex> decoder_lock(decoder_mutex_);
+        if (opus_decoder_ != nullptr) {
+            esp_opus_dec_close(opus_decoder_);
+            opus_decoder_ = nullptr;
+        }
+        // Paksa SetDecodeSampleRate() membuka decoder lagi setelah radio berhenti.
+        decoder_sample_rate_ = 0;
+    }
+    ESP_LOGI(TAG, "Opus codecs released for radio: free heap %u -> %u",
+             static_cast<unsigned>(free_before),
+             static_cast<unsigned>(esp_get_free_heap_size()));
+
     ESP_LOGI(TAG, "Radio playback started; voice processing and wake word disabled");
     return true;
 }
@@ -644,6 +716,22 @@ void AudioService::StopRadioPlayback(bool restore_wake_word) {
         timestamp_queue_.clear();
         playback_drained_notified_ = true;
         audio_queue_cv_.notify_all();
+    }
+
+    // Buka kembali encoder Opus yang dilepas saat radio mulai.
+    // Decoder dibuka otomatis oleh SetDecodeSampleRate() saat paket suara berikutnya tiba.
+    {
+        std::lock_guard<std::mutex> encoder_lock(g_encoder_mutex);
+        if (g_opus_released_for_radio && opus_encoder_ == nullptr) {
+            if (OpenOpusEncoder(&opus_encoder_, &encoder_frame_size_, &encoder_outbuf_size_)) {
+                encoder_sample_rate_ = 16000;
+                encoder_duration_ms_ = OPUS_FRAME_DURATION_MS;
+                g_opus_released_for_radio = false;
+                ESP_LOGI(TAG, "Opus encoder restored after radio");
+            } else {
+                ESP_LOGE(TAG, "Opus encoder could not be restored; will retry on next audio");
+            }
+        }
     }
 
     if (restore_wake_word && !service_stopped_.load()) {
