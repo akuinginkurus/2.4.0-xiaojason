@@ -10,7 +10,8 @@
 #include <strings.h>
 #include <vector>
 #include <utility>
-
+#include "board.h"
+#include "assets/lang_config.h"
 #include <esp_http_client.h>
 #include <esp_log.h>
 #include <esp_system.h>
@@ -372,7 +373,7 @@ bool RadioPlayer::StartRadio() {
     stop_requested_.store(false);
     startup_state_.store(0);
     active_.store(true);
-
+    Board::GetInstance().GetDisplay()->SetStatus("RADIO");
     if (xTaskCreate(
             TaskEntry,
             "radio_player",
@@ -696,5 +697,12 @@ void RadioPlayer::TaskLoop() {
     }
 
     audio.StopRadioPlayback(true);
+    auto& app = Application::GetInstance();
+
+if (app.GetDeviceState() == kDeviceStateIdle) {
+    Board::GetInstance().GetDisplay()->SetStatus(
+        Lang::Strings::STANDBY
+    );
+}
     ESP_LOGI(TAG, "Radio playback stopped");
 }
