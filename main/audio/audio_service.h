@@ -137,6 +137,13 @@ public:
     void ResetDecoder();
     void SetModelsList(srmodel_list_t* models_list);
 
+    // Radio PCM is queued here so AudioOutputTask remains the sole I2S writer.
+    // Samples must already be mono, signed 16-bit, at codec output_sample_rate().
+    bool StartRadioPlayback();
+    void StopRadioPlayback(bool restore_wake_word = true);
+    bool PushRadioPcm(std::vector<int16_t>&& pcm, TickType_t wait_ticks = portMAX_DELAY);
+    bool IsRadioPlaybackActive() const { return radio_playback_active_.load(); }
+
 private:
     AudioCodec* codec_ = nullptr;
     AudioServiceCallbacks callbacks_;
@@ -190,6 +197,9 @@ private:
 #endif
     std::atomic<bool> service_stopped_{true};
     std::atomic<bool> audio_input_need_warmup_{false};
+    std::atomic<bool> radio_playback_active_{false};
+    bool radio_restore_wake_word_ = true;
+    bool radio_restore_voice_processing_ = false;
 
     esp_timer_handle_t audio_power_timer_ = nullptr;
     std::chrono::steady_clock::time_point last_input_time_;

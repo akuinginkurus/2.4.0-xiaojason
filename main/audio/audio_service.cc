@@ -166,6 +166,7 @@ void AudioService::Start() {
 
 void AudioService::Stop() {
     esp_timer_stop(audio_power_timer_);
+    radio_playback_active_.store(false);
     service_stopped_.store(true);
     xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING |
         AS_EVENT_WAKE_WORD_RUNNING |
@@ -579,21 +580,117 @@ void AudioService::PushTaskToEncodeQueue(AudioTaskType type, std::vector<int16_t
 
 bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait) {
     std::unique_lock<std::mutex> lock(audio_queue_mutex_);
+    if (radio_playback_active_.load() || service_stopped_.load()) {
+        return false;
+    }
     if (audio_decode_queue_.size() >= MAX_DECODE_PACKETS_IN_QUEUE) {
         if (wait) {
             audio_queue_cv_.wait(lock, [this]() {
-                return service_stopped_.load() ||
+                return service_stopped_.load() || radio_playback_active_.load() ||
                     audio_decode_queue_.size() < MAX_DECODE_PACKETS_IN_QUEUE;
             });
         } else {
             return false;
         }
     }
-    if (service_stopped_.load()) {
+    if (service_stopped_.load() || radio_playback_active_.load()) {
         return false;
     }
     playback_drained_notified_ = false;
     audio_decode_queue_.push_back(std::move(packet));
+    audio_queue_cv_.notify_all();
+    return true;
+}
+
+bool AudioService::StartRadioPlayback() {
+    if (service_stopped_.load() || codec_ == nullptr) {
+        ESP_LOGW(TAG, "Cannot start radio: audio service is not ready");
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+        if (radio_playback_active_.load()) {
+            return true;
+        }
+        radio_restore_wake_word_ = IsWakeWordRunning();
+        radio_restore_voice_processing_ = IsAudioProcessorRunning();
+        radio_playback_active_.store(true);
+        ++playback_generation_;
+        audio_decode_queue_.clear();
+        audio_playback_queue_.clear();
+        timestamp_queue_.clear();
+        // Radio is continuous; short network gaps must not signal TTS drained.
+        playback_drained_notified_ = true;
+        audio_queue_cv_.notify_all();
+    }
+
+    EnableVoiceProcessing(false);
+    EnableWakeWordDetection(false);
+    ESP_LOGI(TAG, "Radio playback started; voice processing and wake word disabled");
+    return true;
+}
+
+void AudioService::StopRadioPlayback(bool restore_wake_word) {
+    if (!radio_playback_active_.exchange(false)) {
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+        ++playback_generation_;
+        audio_decode_queue_.clear();
+        audio_playback_queue_.clear();
+        timestamp_queue_.clear();
+        playback_drained_notified_ = true;
+        audio_queue_cv_.notify_all();
+    }
+
+    if (restore_wake_word && !service_stopped_.load()) {
+        if (radio_restore_voice_processing_) {
+            EnableVoiceProcessing(true);
+        }
+        if (radio_restore_wake_word_) {
+            EnableWakeWordDetection(true);
+        }
+    }
+    ESP_LOGI(TAG, "Radio playback stopped");
+}
+
+bool AudioService::PushRadioPcm(std::vector<int16_t>&& pcm, TickType_t wait_ticks) {
+    if (pcm.empty() || !radio_playback_active_.load() || service_stopped_.load()) {
+        return false;
+    }
+
+    // 240 ms at 24 kHz mono. Keep memory bounded on ESP32-C3.
+    constexpr size_t kMaxSamplesPerBlock = 5760;
+    if (pcm.size() > kMaxSamplesPerBlock) {
+        ESP_LOGW(TAG, "Radio PCM block too large (%u samples)", static_cast<unsigned>(pcm.size()));
+        return false;
+    }
+
+    std::unique_lock<std::mutex> lock(audio_queue_mutex_);
+    auto has_room_or_stopped = [this]() {
+        return service_stopped_.load() || !radio_playback_active_.load() ||
+               audio_playback_queue_.size() < 3;
+    };
+    if (!has_room_or_stopped()) {
+        if (wait_ticks == portMAX_DELAY) {
+            audio_queue_cv_.wait(lock, has_room_or_stopped);
+        } else if (!audio_queue_cv_.wait_for(lock,
+                       std::chrono::milliseconds(static_cast<uint32_t>(wait_ticks) * portTICK_PERIOD_MS), has_room_or_stopped)) {
+            return false;
+        }
+    }
+    if (service_stopped_.load() || !radio_playback_active_.load()) {
+        return false;
+    }
+
+    auto task = std::make_unique<AudioTask>();
+    task->type = kAudioTaskTypeDecodeToPlaybackQueue;
+    task->pcm = std::move(pcm);
+    task->timestamp = 0;
+    audio_playback_queue_.push_back(std::move(task));
     audio_queue_cv_.notify_all();
     return true;
 }
