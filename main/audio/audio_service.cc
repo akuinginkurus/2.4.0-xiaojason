@@ -2,6 +2,7 @@
 #include <esp_log.h>
 #include <esp_system.h>
 #include <cstring>
+#include <esp_heap_caps.h>
 
 #define RATE_CVT_CFG(_src_rate, _dest_rate, _channel)        \
     (esp_ae_rate_cvt_cfg_t)                                  \
@@ -750,9 +751,10 @@ void AudioService::StopRadioPlayback(bool restore_wake_word) {
         audio_queue_cv_.notify_all();
     }
 
-    // Buka kembali encoder Opus; kalau tetap gagal, restart supaya mic tidak mati.
+    // Buka kembali encoder Opus. Coba lebih lama (±5 detik); restart hanya
+    // sebagai pilihan terakhir supaya mic tidak mati.
     bool encoder_ok = false;
-    for (int attempt = 0; attempt < 5 && !encoder_ok; attempt++) {
+    for (int attempt = 0; attempt < 12 && !encoder_ok; attempt++) {
         {
             std::lock_guard<std::mutex> encoder_lock(g_encoder_mutex);
             if (!g_opus_released_for_radio || opus_encoder_ != nullptr) {
@@ -766,7 +768,11 @@ void AudioService::StopRadioPlayback(bool restore_wake_word) {
             }
         }
         if (!encoder_ok) {
-            vTaskDelay(pdMS_TO_TICKS(300));
+            ESP_LOGW(TAG, "Opus restore attempt %d failed (free heap %u, largest block %u)",
+                     attempt + 1,
+                     static_cast<unsigned>(esp_get_free_heap_size()),
+                     static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+            vTaskDelay(pdMS_TO_TICKS(400));
         }
     }
     if (!encoder_ok) {
@@ -785,7 +791,6 @@ void AudioService::StopRadioPlayback(bool restore_wake_word) {
     }
     ESP_LOGI(TAG, "Radio playback stopped");
 }
-
 bool AudioService::PushRadioPcm(std::vector<int16_t>&& pcm, TickType_t wait_ticks) {
     if (pcm.empty() || !radio_playback_active_.load() || service_stopped_.load()) {
         return false;
