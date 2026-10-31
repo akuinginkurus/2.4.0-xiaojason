@@ -42,8 +42,8 @@ bool g_opus_released_for_radio = false;
 
 // Penyangga radio: antrean PCM lebih dalam dan menunggu terisi dulu sebelum
 // diputar, supaya jeda jaringan/decoder singkat tidak membuat suara putus-putus.
-constexpr size_t kRadioQueueDepth = 6;
-constexpr size_t kRadioPrebufferBlocks = 3;
+constexpr size_t kRadioQueueDepth = 12;
+constexpr size_t kRadioPrebufferBlocks = 7;
 std::atomic<bool> g_radio_prebuffered{false};
 std::atomic<uint32_t> g_radio_underruns{0};
 uint32_t g_radio_underruns_logged = 0;  // hanya dipakai dari PushRadioPcm
@@ -768,6 +768,8 @@ void AudioService::StopRadioPlayback(bool restore_wake_word) {
             }
         }
         if (!encoder_ok) {
+                // Buka decoder Opus sekarang, selagi heap masih utuh (sebelum MQTT/TLS membukanya lagi).
+    SetDecodeSampleRate(16000, OPUS_FRAME_DURATION_MS);
             ESP_LOGW(TAG, "Opus restore attempt %d failed (free heap %u, largest block %u)",
                      attempt + 1,
                      static_cast<unsigned>(esp_get_free_heap_size()),
@@ -776,6 +778,8 @@ void AudioService::StopRadioPlayback(bool restore_wake_word) {
         }
     }
     if (!encoder_ok) {
+            // Buka decoder Opus sekarang, selagi heap masih utuh (sebelum MQTT/TLS membukanya lagi).
+    SetDecodeSampleRate(16000, OPUS_FRAME_DURATION_MS);
         ESP_LOGE(TAG, "Opus encoder cannot be restored, restarting");
         vTaskDelay(pdMS_TO_TICKS(500));
         esp_restart();
