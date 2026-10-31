@@ -42,8 +42,8 @@ bool g_opus_released_for_radio = false;
 
 // Penyangga radio: antrean PCM lebih dalam dan menunggu terisi dulu sebelum
 // diputar, supaya jeda jaringan/decoder singkat tidak membuat suara putus-putus.
-constexpr size_t kRadioQueueDepth = 12;
-constexpr size_t kRadioPrebufferBlocks = 7;
+constexpr size_t kRadioQueueDepth = 8;
+constexpr size_t kRadioPrebufferBlocks = 5;
 std::atomic<bool> g_radio_prebuffered{false};
 std::atomic<uint32_t> g_radio_underruns{0};
 uint32_t g_radio_underruns_logged = 0;  // hanya dipakai dari PushRadioPcm
