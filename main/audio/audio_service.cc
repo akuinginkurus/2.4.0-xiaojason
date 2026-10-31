@@ -1020,11 +1020,13 @@ void AudioService::CheckAndUpdateAudioPowerState() {
         // input task instead of closing the codec from the esp_timer task.
         xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_INPUT_STOP_REQUEST);
     }
-    if (output_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->output_enabled()) {
-        // Keep TX clock when duplex RX is active; otherwise RX may stall on some boards.
-        if (!(codec_->duplex() && codec_->input_enabled())) {
-            codec_->EnableOutput(false);
-        }
+    if (!radio_playback_active_.load() &&
+    output_elapsed > AUDIO_POWER_TIMEOUT_MS &&
+    codec_->output_enabled()) {
+
+    // Keep TX clock when duplex RX is active.
+    if (!(codec_->duplex() && codec_->input_enabled())) {
+        codec_->EnableOutput(false);
     }
     if (!codec_->input_enabled() && !codec_->output_enabled()) {
         esp_timer_stop(audio_power_timer_);
