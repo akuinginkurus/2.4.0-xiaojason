@@ -515,6 +515,7 @@ void RadioPlayer::TaskLoop() {
         int64_t stat_audio_us = 0;
         int64_t stat_dec_us = 0;
         int64_t stat_max_read_us = 0;
+        int64_t stat_bytes = 0;
         unsigned stat_rate = 0;
         unsigned stat_ch = 0;
 
@@ -532,16 +533,20 @@ void RadioPlayer::TaskLoop() {
             }
 
             if (esp_timer_get_time() - stat_window_start_us >= 5000000) {
-                ESP_LOGI(TAG, "Radio stats 5s: audio=%lld ms, decode=%lld ms, max_read=%lld ms, %u Hz %u ch, free heap %u",
+                wifi_ap_record_t ap = {};
+                const int rssi = (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) ? ap.rssi : 0;
+                ESP_LOGI(TAG, "Radio stats 5s: audio=%lld ms, decode=%lld ms, max_read=%lld ms, bytes=%lld, rssi=%d, %u Hz %u ch, free heap %u",
                          static_cast<long long>(stat_audio_us / 1000),
                          static_cast<long long>(stat_dec_us / 1000),
                          static_cast<long long>(stat_max_read_us / 1000),
-                         stat_rate, stat_ch,
+                         static_cast<long long>(stat_bytes),
+                         rssi, stat_rate, stat_ch,
                          static_cast<unsigned>(esp_get_free_heap_size()));
                 stat_window_start_us = esp_timer_get_time();
                 stat_audio_us = 0;
                 stat_dec_us = 0;
                 stat_max_read_us = 0;
+                stat_bytes = 0;
             }
 
             if (read < 0) {
@@ -553,6 +558,8 @@ void RadioPlayer::TaskLoop() {
                 vTaskDelay(pdMS_TO_TICKS(20));
                 continue;
             }
+
+            stat_bytes += read;
 
             if (!logged_first_bytes) {
                 logged_first_bytes = true;
