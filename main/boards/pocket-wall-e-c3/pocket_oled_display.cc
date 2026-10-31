@@ -418,16 +418,61 @@ void PocketOledDisplay::UpdateAnimationFrame() {
     constexpr int max_look_x = 7;
     constexpr int max_look_y = 4;
 
+    const bool neutral = face_mode_ == FaceMode::kNeutral;
+
+    // ---- Gerakan spontan (hanya saat netral): kedip ganda, melirik, kedip sebelah,
+    // menyipit, membelalak, melonjak kecil. ----
+    if (!neutral) {
+        gesture_ = Gesture::kNone;
+    } else if (gesture_ == Gesture::kNone) {
+        if (animation_tick_ >= next_gesture_tick_) {
+            uint32_t duration = 15;
+            switch ((NextRandom() >> 16) % 6) {
+                case 0: gesture_ = Gesture::kDoubleBlink; duration = 12; break;
+                case 1: gesture_ = Gesture::kSweep;       duration = 40; break;
+                case 2: gesture_ = Gesture::kWink;        duration = 14; break;
+                case 3: gesture_ = Gesture::kSquint;      duration = 30; break;
+                case 4: gesture_ = Gesture::kWide;        duration = 20; break;
+                default: gesture_ = Gesture::kBounce;     duration = 15; break;
+            }
+            gesture_start_tick_ = animation_tick_;
+            gesture_until_tick_ = animation_tick_ + duration;
+            wink_left_ = ((NextRandom() >> 20) & 1U) != 0;
+        }
+    } else if (animation_tick_ >= gesture_until_tick_) {
+        gesture_ = Gesture::kNone;
+        next_gesture_tick_ = animation_tick_ + 90 + (NextRandom() % 160);
+    }
+    const int gt = static_cast<int>(animation_tick_ - gesture_start_tick_);
+
+    // ---- Kedip ----
     if (animation_tick_ >= next_blink_tick_) {
         blink_until_tick_ = animation_tick_ + 3;
-        next_blink_tick_ = animation_tick_ + 70 + (NextRandom() % 100);
+        next_blink_tick_ = animation_tick_ + 60 + (NextRandom() % 110);
     }
-    const bool blink = animation_tick_ < blink_until_tick_;
+    bool blink = animation_tick_ < blink_until_tick_;
+    if (gesture_ == Gesture::kDoubleBlink) {
+        blink = blink || gt < 3 || (gt >= 6 && gt < 9);
+    }
 
-    if (animation_tick_ >= next_idle_tick_ && face_mode_ == FaceMode::kNeutral) {
-        target_look_x_ = static_cast<int>(NextRandom() % (max_look_x * 2 + 1)) - max_look_x;
-        target_look_y_ = static_cast<int>(NextRandom() % (max_look_y * 2 + 1)) - max_look_y;
-        next_idle_tick_ = animation_tick_ + 45 + (NextRandom() % 75);
+    // ---- Arah pandang ----
+    if (neutral && gesture_ == Gesture::kNone && animation_tick_ >= next_idle_tick_) {
+        if ((NextRandom() >> 16) % 4 == 0) {
+            target_look_x_ = 0;
+            target_look_y_ = 0;
+        } else {
+            target_look_x_ = static_cast<int>(NextRandom() % (max_look_x * 2 + 1)) - max_look_x;
+            target_look_y_ = static_cast<int>(NextRandom() % (max_look_y * 2 + 1)) - max_look_y;
+        }
+        next_idle_tick_ = animation_tick_ + 25 + (NextRandom() % 60);
+    }
+
+    if (gesture_ == Gesture::kSweep) {
+        target_look_x_ = gt < 12 ? -max_look_x : (gt < 28 ? max_look_x : 0);
+        target_look_y_ = 0;
+    } else if (gesture_ == Gesture::kSquint || gesture_ == Gesture::kWide) {
+        target_look_x_ = 0;
+        target_look_y_ = 0;
     }
 
     if (face_mode_ == FaceMode::kListening) {
@@ -439,6 +484,12 @@ void PocketOledDisplay::UpdateAnimationFrame() {
     } else if (face_mode_ == FaceMode::kAngry) {
         target_look_x_ = 0;
         target_look_y_ = 2;
+    } else if (face_mode_ == FaceMode::kSad) {
+        target_look_x_ = 0;
+        target_look_y_ = 3;
+    } else if (face_mode_ == FaceMode::kSleepy) {
+        target_look_x_ = 0;
+        target_look_y_ = 3;
     } else if (face_mode_ == FaceMode::kSpeaking || face_mode_ == FaceMode::kHappy) {
         target_look_x_ = 0;
         target_look_y_ = 0;
@@ -447,16 +498,59 @@ void PocketOledDisplay::UpdateAnimationFrame() {
     current_look_x_ = Ease(current_look_x_, target_look_x_);
     current_look_y_ = Ease(current_look_y_, target_look_y_);
 
-    int target_height = eye_height;
-    if (blink) {
-        target_height = 2;
-    } else if (face_mode_ == FaceMode::kSleepy) {
-        target_height = 7;
-    } else if (face_mode_ == FaceMode::kListening) {
-        target_height = eye_height + 3;
+    // ---- Tinggi mata kiri/kanan (bisa berbeda: kedip sebelah, ekspresi berpikir) ----
+    const int phase = static_cast<int>(animation_tick_ % 120);
+    const int breath = (phase < 60 ? phase : 120 - phase) / 30;  // 0..2, "bernapas"
+    int left_target = eye_height;
+    int right_target = eye_height;
+    switch (face_mode_) {
+        case FaceMode::kNeutral:
+            left_target = right_target = eye_height - 1 + breath;
+            break;
+        case FaceMode::kListening:
+            left_target = right_target = eye_height + 3;
+            break;
+        case FaceMode::kThinking:
+            left_target = eye_height;
+            right_target = 28;
+            break;
+        case FaceMode::kSpeaking:
+            left_target = right_target = 32 + static_cast<int>((animation_tick_ / 4) % 3) * 2;
+            break;
+        case FaceMode::kHappy:
+            left_target = right_target = 32;
+            break;
+        case FaceMode::kSad:
+        case FaceMode::kAngry:
+            left_target = right_target = 30;
+            break;
+        case FaceMode::kSleepy:
+            left_target = right_target = 8 - breath;
+            break;
     }
-    current_eye_height_ = Ease(current_eye_height_, target_height);
 
+    if (gesture_ == Gesture::kSquint) {
+        left_target = right_target = 14;
+    } else if (gesture_ == Gesture::kWide) {
+        left_target = right_target = 42;
+    } else if (gesture_ == Gesture::kWink && gt >= 2 && gt < 12) {
+        if (wink_left_) {
+            left_target = 3;
+            right_target += 2;
+        } else {
+            right_target = 3;
+            left_target += 2;
+        }
+    }
+
+    if (blink) {
+        left_target = 2;
+        right_target = 2;
+    }
+    current_eye_height_ = Ease(current_eye_height_, left_target);
+    current_right_eye_height_ = Ease(current_right_eye_height_, right_target);
+
+    // ---- Gerak kecil sesuai suasana ----
     int animation_x = 0;
     int animation_y = 0;
     if (face_mode_ == FaceMode::kSpeaking) {
@@ -465,17 +559,28 @@ void PocketOledDisplay::UpdateAnimationFrame() {
     } else if (face_mode_ == FaceMode::kThinking) {
         // A short horizontal confused-style shiver.
         animation_x = ((animation_tick_ / 4) % 2 == 0) ? -1 : 1;
+    } else if (face_mode_ == FaceMode::kHappy) {
+        // Senang: goyang naik-turun pelan.
+        animation_y = ((animation_tick_ / 5) % 2 == 0) ? -2 : 0;
+    }
+    if (gesture_ == Gesture::kBounce) {
+        animation_y = ((gt / 3) % 2 == 0) ? -3 : 0;
+    } else if (gesture_ == Gesture::kWide) {
+        animation_y = -1;
     }
 
     const int left_x = base_x + current_look_x_ + animation_x;
     const int right_x = left_x + eye_width + eye_gap;
-    const int eye_y =
-        base_y + (eye_height - current_eye_height_) / 2 + current_look_y_ + animation_y;
+    int left_y = base_y + (eye_height - current_eye_height_) / 2 + current_look_y_ + animation_y;
+    int right_y =
+        base_y + (eye_height - current_right_eye_height_) / 2 + current_look_y_ + animation_y;
+    left_y = std::max(0, std::min(left_y, 48 - current_eye_height_));
+    right_y = std::max(0, std::min(right_y, 48 - current_right_eye_height_));
 
-    lv_obj_set_pos(left_eye_, left_x, eye_y);
+    lv_obj_set_pos(left_eye_, left_x, left_y);
     lv_obj_set_size(left_eye_, eye_width, current_eye_height_);
-    lv_obj_set_pos(right_eye_, right_x, eye_y);
-    lv_obj_set_size(right_eye_, eye_width, current_eye_height_);
+    lv_obj_set_pos(right_eye_, right_x, right_y);
+    lv_obj_set_size(right_eye_, eye_width, current_right_eye_height_);
 
     for (auto* lid : {left_top_lid_, right_top_lid_, left_bottom_lid_, right_bottom_lid_}) {
         lv_obj_add_flag(lid, LV_OBJ_FLAG_HIDDEN);
@@ -488,9 +593,9 @@ void PocketOledDisplay::UpdateAnimationFrame() {
         const int lid_width = eye_width + 8;
         lv_obj_remove_flag(left_top_lid_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(right_top_lid_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_pos(left_top_lid_, left_x - 4, eye_y - 2);
+        lv_obj_set_pos(left_top_lid_, left_x - 4, left_y - 2);
         lv_obj_set_size(left_top_lid_, lid_width, lid_height);
-        lv_obj_set_pos(right_top_lid_, right_x - 4, eye_y - 2);
+        lv_obj_set_pos(right_top_lid_, right_x - 4, right_y - 2);
         lv_obj_set_size(right_top_lid_, lid_width, lid_height);
         lv_obj_set_style_transform_rotation(left_top_lid_, angry ? -140 : 140, 0);
         lv_obj_set_style_transform_rotation(right_top_lid_, angry ? 140 : -140, 0);
@@ -501,15 +606,31 @@ void PocketOledDisplay::UpdateAnimationFrame() {
         lv_obj_remove_flag(left_bottom_lid_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(right_bottom_lid_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_pos(left_bottom_lid_, left_x - 2,
-                       eye_y + current_eye_height_ - cover_height / 2);
+                       left_y + current_eye_height_ - cover_height / 2);
         lv_obj_set_size(left_bottom_lid_, eye_width + 4, cover_height);
         lv_obj_set_pos(right_bottom_lid_, right_x - 2,
-                       eye_y + current_eye_height_ - cover_height / 2);
+                       right_y + current_right_eye_height_ - cover_height / 2);
         lv_obj_set_size(right_bottom_lid_, eye_width + 4, cover_height);
     }
 }
 
 void PocketOledDisplay::SetFaceMode(FaceMode mode) {
+    if (mode != face_mode_) {
+        // Bentuk sudut mata ikut suasana: tegas saat marah, bulat saat senang.
+        int radius = 9;
+        switch (mode) {
+            case FaceMode::kHappy:     radius = 13; break;
+            case FaceMode::kListening: radius = 11; break;
+            case FaceMode::kSad:       radius = 10; break;
+            case FaceMode::kAngry:     radius = 5;  break;
+            case FaceMode::kSleepy:    radius = 6;  break;
+            default: break;
+        }
+        if (left_eye_ != nullptr && right_eye_ != nullptr) {
+            lv_obj_set_style_radius(left_eye_, radius, 0);
+            lv_obj_set_style_radius(right_eye_, radius, 0);
+        }
+    }
     face_mode_ = mode;
     if (mode != FaceMode::kNeutral) {
         target_look_x_ = 0;
