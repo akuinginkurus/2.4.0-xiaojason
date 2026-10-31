@@ -258,9 +258,36 @@ void Application::Run() {
         }
 
         if (bits & MAIN_EVENT_CLOCK_TICK) {
-            clock_ticks_++;
+                        clock_ticks_++;
             auto display = Board::GetInstance().GetDisplay();
-            display->UpdateStatusBar();
+
+            static int radio_active_ticks = 0;
+            const bool radio_active = audio_service_.IsRadioPlaybackActive();
+            if (radio_active) {
+                radio_active_ticks++;
+            } else if (radio_active_ticks > 0) {
+                const bool was_real_playback = radio_active_ticks >= 4;
+                radio_active_ticks = 0;
+                if (was_real_playback) {
+                    auto st = GetDeviceState();
+                    if (st == kDeviceStateIdle) {
+                        // Radio berhenti: aktifkan lagi "Hi Jason".
+                        Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+                        display->SetStatus(Lang::Strings::STANDBY);
+                        display->SetEmotion("neutral");
+                        audio_service_.EnableVoiceProcessing(false);
+                        audio_service_.EnableWakeWordDetection(true);
+                    } else if ((st == kDeviceStateListening || st == kDeviceStateSpeaking) &&
+                               protocol_) {
+                        protocol_->CloseAudioChannel();
+                    }
+                }
+            }
+
+            // Jangan gambar ulang status bar (jam) saat radio.
+            if (!radio_active) {
+                display->UpdateStatusBar();
+            }
 
             // Print debug info every 10 seconds
             if (clock_ticks_ % 10 == 0) {
@@ -922,10 +949,19 @@ case kDeviceStateIdle:
         display->SetStatus("RADIO");
         display->ClearChatMessages();
         display->SetEmotion("happy");
+        board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
 
         audio_service_.EnableVoiceProcessing(false);
         audio_service_.EnableWakeWordDetection(false);
     } else {
+                    if (audio_service_.IsRadioPlaybackActive()) {
+                // Radio sedang diputar: jangan nyalakan mic, tutup sesi suara.
+                display->SetStatus("RADIO");
+                if (protocol_) {
+                    protocol_->CloseAudioChannel();
+                }
+                break;
+                    }
         display->SetStatus(Lang::Strings::STANDBY);
         display->ClearChatMessages();
         display->SetEmotion("neutral");
@@ -1128,6 +1164,9 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
 }
 
 bool Application::CanEnterSleepMode() {
+        if (audio_service_.IsRadioPlaybackActive()) {
+        return false;
+        }
     if (GetDeviceState() != kDeviceStateIdle) {
         return false;
     }
