@@ -1013,26 +1013,33 @@ bool AudioService::MarkPlaybackDrainedLocked() {
 
 void AudioService::CheckAndUpdateAudioPowerState() {
     auto now = std::chrono::steady_clock::now();
-    auto input_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_input_time_).count();
-    auto output_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_output_time_).count();
+    auto input_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - last_input_time_).count();
+    auto output_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - last_output_time_).count();
+
     if (input_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->input_enabled()) {
-        // ADC continuous start/stop must run in the same task. Wake the audio
-        // input task instead of closing the codec from the esp_timer task.
+        // ADC continuous start/stop must run in the same task.
+        // Wake the audio input task instead of closing the codec
+        // from the esp_timer task.
         xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_INPUT_STOP_REQUEST);
     }
-    if (!radio_playback_active_.load() &&
-    output_elapsed > AUDIO_POWER_TIMEOUT_MS &&
-    codec_->output_enabled()) {
 
-    // Keep TX clock when duplex RX is active.
-    if (!(codec_->duplex() && codec_->input_enabled())) {
-        codec_->EnableOutput(false);
+    // Jangan matikan output selama radio sedang diputar.
+    if (!radio_playback_active_.load() &&
+        output_elapsed > AUDIO_POWER_TIMEOUT_MS &&
+        codec_->output_enabled()) {
+
+        // Keep TX clock when duplex RX is active.
+        if (!(codec_->duplex() && codec_->input_enabled())) {
+            codec_->EnableOutput(false);
+        }
     }
+
     if (!codec_->input_enabled() && !codec_->output_enabled()) {
         esp_timer_stop(audio_power_timer_);
     }
 }
-
 void AudioService::SetModelsList(srmodel_list_t* models_list) {
     if (audio_engine_initialized_ && models_list_ != models_list) {
         ESP_LOGW(TAG, "Ignoring speech model replacement after audio engine initialization");
