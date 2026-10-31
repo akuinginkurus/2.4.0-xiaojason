@@ -56,6 +56,8 @@ constexpr int kRadioOutputRate = 24000;
 constexpr int kMaxRedirects = 5;
 constexpr int kConnectTimeoutMs = 8000;
 constexpr int kStartupTimeoutMs = 30000;
+// Kalau tidak ada data masuk selama ini, anggap stream putus lalu sambung ulang.
+constexpr int64_t kStallTimeoutUs = 3000000;
 
 struct HttpResponseHeaders {
     std::string content_type;
@@ -188,6 +190,37 @@ esp_http_client_handle_t ConnectStation(
     }
 
     return client;
+}
+
+// Sambung ulang saat stream putus: coba stasiun yang sedang dipakai dulu,
+// lalu stasiun lain. Maksimal 2 putaran, setelah itu menyerah (nullptr).
+esp_http_client_handle_t ReconnectStation(
+    size_t& current_station,
+    HttpResponseHeaders& headers,
+    const std::atomic<bool>& stop_requested) {
+
+    for (int round = 0; round < 2; round++) {
+        for (size_t n = 0; n < kStationCount; n++) {
+            if (stop_requested.load()) {
+                return nullptr;
+            }
+
+            const size_t idx = (current_station + n) % kStationCount;
+            ESP_LOGI(TAG, "Reconnecting to %s (free heap %u, largest block %u)",
+                     kStations[idx].name,
+                     static_cast<unsigned>(esp_get_free_heap_size()),
+                     static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+
+            esp_http_client_handle_t client = ConnectStation(kStations[idx], headers, stop_requested);
+            if (client != nullptr) {
+                current_station = idx;
+                ESP_LOGI(TAG, "Reconnected to %s", kStations[idx].name);
+                return client;
+            }
+            vTaskDelay(pdMS_TO_TICKS(300));
+        }
+    }
+    return nullptr;
 }
 
 // Resampler linear tanpa alokasi heap (pengganti esp_ae_rate_cvt yang butuh
@@ -484,6 +517,7 @@ void RadioPlayer::TaskLoop() {
 
     bool decoder_registered = false;
     bool simple_decoder_registered = false;
+    size_t current_station = 0;
 
     uint8_t* input_buffer = static_cast<uint8_t*>(malloc(kHttpReadSize));
     uint8_t* output_buffer = static_cast<uint8_t*>(malloc(kDecoderOutputSize));
@@ -509,6 +543,7 @@ void RadioPlayer::TaskLoop() {
 
             client = ConnectStation(kStations[i], response_headers, stop_requested_);
             if (client != nullptr) {
+                current_station = i;
                 ESP_LOGI(TAG, "Connected to %s", kStations[i].name);
                 break;
             }
@@ -566,6 +601,8 @@ void RadioPlayer::TaskLoop() {
         int64_t stat_bytes = 0;
         unsigned stat_rate = 0;
         unsigned stat_ch = 0;
+        int64_t last_data_us = esp_timer_get_time();
+        int reconnect_count = 0;
 
         // Loop streaming.
         while (!stop_requested_.load() && audio.IsRadioPlaybackActive()) {
@@ -597,12 +634,45 @@ void RadioPlayer::TaskLoop() {
                 stat_bytes = 0;
             }
 
-            if (read < 0) {
+            // Stream putus: error baca, atau tidak ada data sama sekali > 3 detik
+            // (server menutup koneksi sehingga read() terus mengembalikan 0).
+            bool lost = false;
+            if (read > 0) {
+                last_data_us = esp_timer_get_time();
+            } else if (read == 0 || read == -ESP_ERR_HTTP_EAGAIN) {
+                if (esp_timer_get_time() - last_data_us >= kStallTimeoutUs) {
+                    lost = true;
+                }
+            } else {
                 ESP_LOGE(TAG, "Radio stream read failed: %d", read);
-                break;
+                lost = true;
             }
 
-            if (read == 0) {
+            if (lost) {
+                if (stop_requested_.load()) {
+                    break;
+                }
+                reconnect_count++;
+                ESP_LOGW(TAG, "Radio stream lost, reconnecting (#%d)", reconnect_count);
+                esp_http_client_close(client);
+                esp_http_client_cleanup(client);
+                client = nullptr;
+
+                client = ReconnectStation(current_station, response_headers, stop_requested_);
+                if (client == nullptr) {
+                    ESP_LOGE(TAG, "Cannot reconnect to any radio station");
+                    break;
+                }
+                last_data_us = esp_timer_get_time();
+                stat_window_start_us = esp_timer_get_time();
+                stat_audio_us = 0;
+                stat_dec_us = 0;
+                stat_max_read_us = 0;
+                stat_bytes = 0;
+                continue;
+            }
+
+            if (read <= 0) {
                 vTaskDelay(pdMS_TO_TICKS(20));
                 continue;
             }
