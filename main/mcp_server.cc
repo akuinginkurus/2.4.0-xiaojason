@@ -9,7 +9,8 @@
 #include <algorithm>
 #include <cstring>
 #include <esp_pthread.h>
-
+#include <esp_heap_caps.h>
+#include <esp_system.h>
 #include "application.h"
 #include "display.h"
 #include "oled_display.h"
@@ -433,13 +434,15 @@ void McpServer::ParseMessage(const cJSON* json) {
 }
 
 void McpServer::ReplyResult(int id, const std::string& result) {
-    std::string payload = "{\"jsonrpc\":\"2.0\",\"id\":";
-    payload += std::to_string(id) + ",\"result\":";
+    std::string payload;
+    payload.reserve(result.size() + 48);
+    payload += "{\"jsonrpc\":\"2.0\",\"id\":";
+    payload += std::to_string(id);
+    payload += ",\"result\":";
     payload += result;
     payload += "}";
     Application::GetInstance().SendMcpMessage(payload);
 }
-
 void McpServer::ReplyError(int id, const std::string& message) {
     std::string payload = "{\"jsonrpc\":\"2.0\",\"id\":";
     payload += std::to_string(id);
@@ -450,15 +453,21 @@ void McpServer::ReplyError(int id, const std::string& message) {
 }
 
 void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_only_tools) {
-    const int max_payload_size = 8000;
-    std::string json = "{\"tools\":[";
-    
+    const size_t max_payload_size = 1600;
+    ESP_LOGI(TAG, "tools/list heap: free %u, largest block %u",
+             (unsigned)esp_get_free_heap_size(),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+
+    std::string json;
+    json.reserve(max_payload_size + 512);
+    json = "{\"tools\":[";
+
     bool found_cursor = cursor.empty();
+    bool added_any = false;
     auto it = tools_.begin();
-    std::string next_cursor = "";
-    
+    std::string next_cursor;
+
     while (it != tools_.end()) {
-        // 如果我们还没有找到起始位置，继续搜索
         if (!found_cursor) {
             if ((*it)->name() == cursor) {
                 found_cursor = true;
@@ -472,28 +481,19 @@ void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_o
             ++it;
             continue;
         }
-        
-        // 添加tool前检查大小
-        std::string tool_json = (*it)->to_json() + ",";
-        if (json.length() + tool_json.length() + 30 > max_payload_size) {
-            // 如果添加这个tool会超出大小限制，设置next_cursor并退出循环
+
+        std::string tool_json = (*it)->to_json();
+        if (added_any && json.length() + tool_json.length() + 30 > max_payload_size) {
             next_cursor = (*it)->name();
             break;
         }
-        
+
+        if (added_any) {
+            json += ",";
+        }
         json += tool_json;
+        added_any = true;
         ++it;
-    }
-    
-    if (json.back() == ',') {
-        json.pop_back();
-    }
-    
-    if (json.back() == '[' && !tools_.empty()) {
-        // 如果没有添加任何tool，返回错误
-        ESP_LOGE(TAG, "tools/list: Failed to add tool %s because of payload size limit", next_cursor.c_str());
-        ReplyError(id, "Failed to add tool " + next_cursor + " because of payload size limit");
-        return;
     }
 
     if (next_cursor.empty()) {
@@ -501,7 +501,7 @@ void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_o
     } else {
         json += "],\"nextCursor\":\"" + next_cursor + "\"}";
     }
-    
+
     ReplyResult(id, json);
 }
 
