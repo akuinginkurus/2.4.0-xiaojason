@@ -12,6 +12,9 @@ public:
     ~PocketOledDisplay() override;
 
     void SetupUI() override;
+    // Status khusus untuk tampilan radio (tanpa mengubah kelas Display dasar):
+    //   "RADIO|<nama stasiun>|<frekuensi>"  -> tampilkan layar radio
+    //   "RADIO_END"                          -> kembali ke wajah Wall-E
     void SetStatus(const char* status) override;
     void SetEmotion(const char* emotion) override;
     void SetChatMessage(const char* role, const char* content) override;
@@ -29,6 +32,8 @@ private:
         kSleepy,
     };
 
+    static constexpr int kRadioBarCount = 5;
+
     lv_obj_t* face_layer_ = nullptr;
     lv_obj_t* left_eye_ = nullptr;
     lv_obj_t* right_eye_ = nullptr;
@@ -38,6 +43,17 @@ private:
     lv_obj_t* right_bottom_lid_ = nullptr;
     lv_obj_t* chat_line_ = nullptr;
     lv_timer_t* animation_timer_ = nullptr;
+
+    // Layar radio.
+    lv_obj_t* radio_layer_ = nullptr;
+    lv_obj_t* radio_name_ = nullptr;
+    lv_obj_t* radio_freq_ = nullptr;
+    lv_obj_t* radio_fm_ = nullptr;
+    lv_obj_t* radio_needle_ = nullptr;
+    lv_obj_t* radio_bars_[kRadioBarCount] = {};
+    int radio_bar_height_[kRadioBarCount] = {};
+    bool radio_active_ = false;
+
     FaceMode face_mode_ = FaceMode::kNeutral;
     uint32_t animation_tick_ = 0;
     uint32_t random_state_ = 0x57414C4C;
@@ -57,6 +73,11 @@ private:
     void SetFaceMode(FaceMode mode);
     FaceMode FaceModeFromEmotion(const char* emotion) const;
     uint32_t NextRandom();
+
+    void BuildRadioUI(lv_obj_t* screen);
+    void ShowRadio(const char* payload);
+    void HideRadio();
+    void UpdateRadioFrame();
 };
 
 #endif  // POCKET_OLED_DISPLAY_H
