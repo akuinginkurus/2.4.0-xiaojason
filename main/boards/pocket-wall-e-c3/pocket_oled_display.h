@@ -32,6 +32,17 @@ private:
         kSleepy,
     };
 
+    // Gerakan spontan mata saat netral supaya terlihat hidup.
+    enum class Gesture {
+        kNone,
+        kDoubleBlink,
+        kSweep,
+        kWink,
+        kSquint,
+        kWide,
+        kBounce,
+    };
+
     static constexpr int kRadioBarCount = 5;
 
     lv_obj_t* face_layer_ = nullptr;
@@ -64,7 +75,13 @@ private:
     int current_look_y_ = 0;
     int target_look_x_ = 0;
     int target_look_y_ = 0;
-    int current_eye_height_ = 2;
+    int current_eye_height_ = 2;        // mata kiri
+    int current_right_eye_height_ = 2;  // mata kanan
+    Gesture gesture_ = Gesture::kNone;
+    uint32_t next_gesture_tick_ = 80;
+    uint32_t gesture_start_tick_ = 0;
+    uint32_t gesture_until_tick_ = 0;
+    bool wink_left_ = false;
     bool has_chat_text_ = false;
 
     static void AnimationTimerCallback(lv_timer_t* timer);
