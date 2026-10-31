@@ -684,12 +684,29 @@ void RadioPlayer::TaskLoop() {
     }
 
     audio.StopRadioPlayback(true);
-    auto& app = Application::GetInstance();
 
-    if (app.GetDeviceState() == kDeviceStateIdle) {
-        Board::GetInstance().GetDisplay()->SetStatus(
-            Lang::Strings::STANDBY
-        );
-    }
-    ESP_LOGI(TAG, "Radio playback stopped");
+auto& app = Application::GetInstance();
+
+if (app.GetDeviceState() == kDeviceStateIdle) {
+
+    // Pastikan voice processing tidak tertinggal aktif.
+    audio.EnableVoiceProcessing(false);
+
+    // Paksa aktifkan kembali pendeteksi Hi Jason.
+    audio.EnableWakeWordDetection(true);
+
+    // Kembali ke mode hemat daya.
+    Board::GetInstance().SetPowerSaveLevel(
+        PowerSaveLevel::LOW_POWER
+    );
+
+    Board::GetInstance().GetDisplay()->SetStatus(
+        Lang::Strings::STANDBY
+    );
+
+    ESP_LOGI(TAG,
+        "Radio stopped: standby restored, wake word enabled");
+}
+
+ESP_LOGI(TAG, "Radio playback stopped");
 }
