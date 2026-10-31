@@ -3,12 +3,24 @@
 #include "assets/lang_config.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace {
 // An original LVGL implementation inspired by the visual behavior documented by
 // FluxGarage RoboEyes: https://github.com/FluxGarage/RoboEyes
 constexpr uint32_t kAnimationPeriodMs = 40;
+
+// Tata letak layar radio (OLED 128x64).
+constexpr int kRadioBarWidth = 4;
+constexpr int kRadioBarStep = 6;
+constexpr int kRadioBarLeft = 9;
+constexpr int kRadioBarBottom = 56;
+constexpr int kRadioBarMaxHeight = 40;
+constexpr int kRadioDialLeft = 46;
+constexpr int kRadioDialWidth = 76;
+constexpr int kRadioDialTicks = 10;
 
 void PrepareShape(lv_obj_t* object) {
     lv_obj_remove_style_all(object);
@@ -29,6 +41,26 @@ int Ease(int current, int target) {
     }
     return current + std::min(-1, delta / 3);
 }
+
+// Font besar untuk angka frekuensi: pakai yang tersedia di konfigurasi LVGL,
+// kalau tidak ada satu pun, pakai font bawaan.
+const lv_font_t* PickBigFont() {
+#if defined(LV_FONT_MONTSERRAT_24) && LV_FONT_MONTSERRAT_24
+    return &lv_font_montserrat_24;
+#elif defined(LV_FONT_MONTSERRAT_20) && LV_FONT_MONTSERRAT_20
+    return &lv_font_montserrat_20;
+#elif defined(LV_FONT_MONTSERRAT_16) && LV_FONT_MONTSERRAT_16
+    return &lv_font_montserrat_16;
+#else
+    return nullptr;
+#endif
+}
+
+void StyleLine(lv_obj_t* line, int width) {
+    lv_obj_set_style_line_width(line, width, 0);
+    lv_obj_set_style_line_color(line, lv_color_white(), 0);
+    lv_obj_set_style_line_rounded(line, false, 0);
+}
 }  // namespace
 
 PocketOledDisplay::PocketOledDisplay(esp_lcd_panel_io_handle_t panel_io,
@@ -40,6 +72,10 @@ PocketOledDisplay::~PocketOledDisplay() {
     if (animation_timer_ != nullptr) {
         lv_timer_delete(animation_timer_);
         animation_timer_ = nullptr;
+    }
+    if (radio_layer_ != nullptr) {
+        lv_obj_delete(radio_layer_);
+        radio_layer_ = nullptr;
     }
     if (chat_line_ != nullptr) {
         lv_obj_delete(chat_line_);
@@ -100,14 +136,198 @@ void PocketOledDisplay::SetupUI() {
 
     ApplyLayout();
     lv_obj_move_foreground(chat_line_);
+
+    // Layar radio dibuat sekali di sini (saat RAM masih lega) dan hanya
+    // disembunyikan/ditampilkan, supaya tidak ada alokasi besar saat radio jalan.
+    BuildRadioUI(screen);
+
     animation_timer_ = lv_timer_create(AnimationTimerCallback, kAnimationPeriodMs, this);
 }
 
+void PocketOledDisplay::BuildRadioUI(lv_obj_t* screen) {
+    radio_layer_ = lv_obj_create(screen);
+    PrepareShape(radio_layer_);
+    lv_obj_set_pos(radio_layer_, 0, 0);
+    lv_obj_set_size(radio_layer_, 128, 64);
+    lv_obj_set_style_bg_color(radio_layer_, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(radio_layer_, LV_OPA_COVER, 0);
+    lv_obj_add_flag(radio_layer_, LV_OBJ_FLAG_HIDDEN);
+
+    // Badan radio.
+    auto* body = lv_obj_create(radio_layer_);
+    PrepareShape(body);
+    lv_obj_set_pos(body, 0, 6);
+    lv_obj_set_size(body, 128, 58);
+    lv_obj_set_style_border_width(body, 1, 0);
+    lv_obj_set_style_border_color(body, lv_color_white(), 0);
+    lv_obj_set_style_border_opa(body, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(body, 8, 0);
+
+    // Antena.
+    static const lv_point_precise_t kAntennaPoints[] = {{104, 6}, {118, 0}};
+    auto* antenna = lv_line_create(radio_layer_);
+    PrepareShape(antenna);
+    lv_line_set_points(antenna, kAntennaPoints, 2);
+    StyleLine(antenna, 2);
+
+    // Kotak speaker berisi equalizer.
+    auto* speaker = lv_obj_create(radio_layer_);
+    PrepareShape(speaker);
+    lv_obj_set_pos(speaker, 6, 12);
+    lv_obj_set_size(speaker, 32, 46);
+    lv_obj_set_style_border_width(speaker, 1, 0);
+    lv_obj_set_style_border_color(speaker, lv_color_white(), 0);
+    lv_obj_set_style_border_opa(speaker, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(speaker, 4, 0);
+
+    for (int i = 0; i < kRadioBarCount; ++i) {
+        radio_bars_[i] = lv_obj_create(radio_layer_);
+        PrepareShape(radio_bars_[i]);
+        lv_obj_set_style_bg_color(radio_bars_[i], lv_color_white(), 0);
+        lv_obj_set_style_bg_opa(radio_bars_[i], LV_OPA_COVER, 0);
+        radio_bar_height_[i] = 6;
+        lv_obj_set_pos(radio_bars_[i], kRadioBarLeft + i * kRadioBarStep, kRadioBarBottom - 6);
+        lv_obj_set_size(radio_bars_[i], kRadioBarWidth, 6);
+    }
+
+    // Nama stasiun (bergulir kalau panjang).
+    radio_name_ = lv_label_create(radio_layer_);
+    lv_obj_set_pos(radio_name_, 44, 10);
+    lv_obj_set_width(radio_name_, 78);
+    lv_obj_set_style_text_color(radio_name_, lv_color_white(), 0);
+    lv_obj_set_style_text_align(radio_name_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(radio_name_, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_label_set_text(radio_name_, "");
+
+    // Frekuensi besar.
+    radio_freq_ = lv_label_create(radio_layer_);
+    lv_obj_set_pos(radio_freq_, 44, 22);
+    lv_obj_set_width(radio_freq_, 60);
+    lv_obj_set_style_text_color(radio_freq_, lv_color_white(), 0);
+    lv_obj_set_style_text_align(radio_freq_, LV_TEXT_ALIGN_LEFT, 0);
+    lv_label_set_long_mode(radio_freq_, LV_LABEL_LONG_CLIP);
+    if (const lv_font_t* big = PickBigFont()) {
+        lv_obj_set_style_text_font(radio_freq_, big, 0);
+    }
+    lv_label_set_text(radio_freq_, "");
+
+    radio_fm_ = lv_label_create(radio_layer_);
+    lv_obj_set_pos(radio_fm_, 106, 40);
+    lv_obj_set_style_text_color(radio_fm_, lv_color_white(), 0);
+    lv_label_set_text(radio_fm_, "FM");
+
+    // Skala dial: garis dasar dengan tanda panjang/pendek.
+    static lv_point_precise_t dial_points[kRadioDialTicks * 3 + 1];
+    int n = 0;
+    for (int k = 0; k < kRadioDialTicks; ++k) {
+        const int x = kRadioDialLeft + k * 8;
+        const int top = (k % 2 == 0) ? 53 : 55;
+        dial_points[n++] = {x, 58};
+        dial_points[n++] = {x, top};
+        dial_points[n++] = {x, 58};
+    }
+    dial_points[n++] = {kRadioDialLeft + kRadioDialWidth, 58};
+    auto* dial = lv_line_create(radio_layer_);
+    PrepareShape(dial);
+    lv_line_set_points(dial, dial_points, n);
+    StyleLine(dial, 1);
+
+    // Jarum penunjuk frekuensi.
+    radio_needle_ = lv_obj_create(radio_layer_);
+    PrepareShape(radio_needle_);
+    lv_obj_set_style_bg_color(radio_needle_, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(radio_needle_, LV_OPA_COVER, 0);
+    lv_obj_set_size(radio_needle_, 3, 10);
+    lv_obj_set_pos(radio_needle_, kRadioDialLeft, 48);
+    lv_obj_add_flag(radio_needle_, LV_OBJ_FLAG_HIDDEN);
+}
+
+void PocketOledDisplay::ShowRadio(const char* payload) {
+    if (radio_layer_ == nullptr || payload == nullptr) {
+        return;
+    }
+
+    char name[40] = {0};
+    char freq[12] = {0};
+    const char* sep = std::strchr(payload, '|');
+    if (sep != nullptr) {
+        std::snprintf(name, sizeof(name), "%.*s", static_cast<int>(sep - payload), payload);
+        std::snprintf(freq, sizeof(freq), "%s", sep + 1);
+    } else {
+        std::snprintf(name, sizeof(name), "%s", payload);
+    }
+
+    const bool numeric = freq[0] >= '0' && freq[0] <= '9';
+
+    lv_label_set_text(radio_name_, name);
+    lv_label_set_text(radio_freq_, freq[0] != '\0' ? freq : "LIVE");
+
+    if (numeric) {
+        lv_obj_remove_flag(radio_fm_, LV_OBJ_FLAG_HIDDEN);
+        // Skala FM 87.5 - 108.0 MHz dipetakan ke lebar dial.
+        const float f = static_cast<float>(std::atof(freq));
+        float ratio = (f - 87.5f) / (108.0f - 87.5f);
+        ratio = std::max(0.0f, std::min(1.0f, ratio));
+        const int x = kRadioDialLeft + static_cast<int>(ratio * (kRadioDialWidth - 4));
+        lv_obj_set_pos(radio_needle_, x, 48);
+        lv_obj_remove_flag(radio_needle_, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(radio_fm_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(radio_needle_, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    radio_active_ = true;
+    lv_obj_remove_flag(radio_layer_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(radio_layer_);
+}
+
+void PocketOledDisplay::HideRadio() {
+    radio_active_ = false;
+    if (radio_layer_ != nullptr) {
+        lv_obj_add_flag(radio_layer_, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void PocketOledDisplay::UpdateRadioFrame() {
+    // Equalizer diperbarui tiap 4 tick (±160 ms) supaya ringan untuk CPU dan OLED.
+    if (radio_layer_ == nullptr || (animation_tick_ % 4) != 0) {
+        return;
+    }
+    for (int i = 0; i < kRadioBarCount; ++i) {
+        const int target = 4 + static_cast<int>((NextRandom() >> 16) % (kRadioBarMaxHeight - 3));
+        radio_bar_height_[i] = (radio_bar_height_[i] + target) / 2;
+        const int h = std::max(3, std::min(kRadioBarMaxHeight, radio_bar_height_[i]));
+        lv_obj_set_pos(radio_bars_[i], kRadioBarLeft + i * kRadioBarStep, kRadioBarBottom - h);
+        lv_obj_set_size(radio_bars_[i], kRadioBarWidth, h);
+    }
+}
+
 void PocketOledDisplay::SetStatus(const char* status) {
+    if (status != nullptr && std::strncmp(status, "RADIO|", 6) == 0) {
+        OledDisplay::SetStatus("RADIO");
+        DisplayLockGuard lock(this);
+        ShowRadio(status + 6);
+        return;
+    }
+    if (status != nullptr && std::strcmp(status, "RADIO_END") == 0) {
+        OledDisplay::SetStatus(Lang::Strings::STANDBY);
+        DisplayLockGuard lock(this);
+        HideRadio();
+        SetFaceMode(FaceMode::kNeutral);
+        if (!has_chat_text_ && chat_line_ != nullptr) {
+            lv_label_set_text(chat_line_, Lang::Strings::STANDBY);
+        }
+        return;
+    }
+
     OledDisplay::SetStatus(status);
     DisplayLockGuard lock(this);
 
     if (status == nullptr) {
+        return;
+    }
+    // Selama radio diputar, perubahan status lain tidak boleh menimpa layar radio.
+    if (radio_active_) {
         return;
     }
     if (std::strcmp(status, Lang::Strings::LISTENING) == 0) {
@@ -181,6 +401,12 @@ void PocketOledDisplay::UpdateAnimationFrame() {
         return;
     }
     ++animation_tick_;
+
+    // Saat radio diputar, animasi mata dilewati (hemat CPU) dan equalizer yang jalan.
+    if (radio_active_) {
+        UpdateRadioFrame();
+        return;
+    }
 
     constexpr int face_width = 128;
     constexpr int eye_width = 44;
