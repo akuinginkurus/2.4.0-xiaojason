@@ -328,6 +328,36 @@ bool ConvertAndQueue(
     return true;
 }
 
+// Dijalankan dari task terpisah setelah task radio dihapus, supaya stack task
+// radio sudah bebas dan encoder Opus bisa mendapat blok heap yang utuh.
+void RestoreAfterRadio() {
+    auto& app = Application::GetInstance();
+    auto& audio = app.GetAudioService();
+
+    ESP_LOGI(TAG, "Restoring audio after radio (free heap %u, largest block %u)",
+             static_cast<unsigned>(esp_get_free_heap_size()),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+
+    audio.StopRadioPlayback(true);
+
+    if (app.GetDeviceState() == kDeviceStateIdle) {
+        // Pastikan voice processing tidak tertinggal aktif.
+        audio.EnableVoiceProcessing(false);
+
+        // Paksa aktifkan kembali pendeteksi Hi Jason.
+        audio.EnableWakeWordDetection(true);
+
+        // Kembali ke mode hemat daya.
+        Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+
+        Board::GetInstance().GetDisplay()->SetStatus(Lang::Strings::STANDBY);
+
+        ESP_LOGI(TAG, "Radio stopped: standby restored, wake word enabled");
+    }
+
+    ESP_LOGI(TAG, "Radio playback stopped");
+}
+
 }  // namespace
 
 RadioPlayer::RadioPlayer() = default;
@@ -413,12 +443,30 @@ void RadioPlayer::TaskEntry(void* arg) {
     auto* self = static_cast<RadioPlayer*>(arg);
     self->TaskLoop();
 
-    if (self->startup_state_.load() == 0) {
-        self->startup_state_.store(-1);
+    // Tandai selesai supaya StartRadio() tidak mengira radio masih berjalan.
+    // active_ tetap true sampai pemulihan audio selesai.
+    self->startup_state_.store(-1);
+    self->task_handle_ = nullptr;
+
+    // Pemulihan dijalankan dari task lain setelah task ini dihapus,
+    // supaya stack 8 KB task radio ikut bebas dan blok heap utuh lagi.
+    const BaseType_t created = xTaskCreate(
+        [](void* param) {
+            auto* player = static_cast<RadioPlayer*>(param);
+            // Beri waktu idle task membebaskan stack task radio.
+            vTaskDelay(pdMS_TO_TICKS(500));
+            RestoreAfterRadio();
+            player->active_.store(false);
+            vTaskDelete(nullptr);
+        },
+        "radio_restore", 4096, self, 5, nullptr);
+
+    if (created != pdPASS) {
+        ESP_LOGE(TAG, "Cannot create restore task, restoring inline");
+        RestoreAfterRadio();
+        self->active_.store(false);
     }
 
-    self->task_handle_ = nullptr;
-    self->active_.store(false);
     vTaskDelete(nullptr);
 }
 
@@ -658,7 +706,7 @@ void RadioPlayer::TaskLoop() {
         }
     } while (false);
 
-    // Bersihkan resource.
+    // Bersihkan resource stream.
     if (client != nullptr) {
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
@@ -683,30 +731,10 @@ void RadioPlayer::TaskLoop() {
         startup_state_.store(-1);
     }
 
-    audio.StopRadioPlayback(true);
-
-auto& app = Application::GetInstance();
-
-if (app.GetDeviceState() == kDeviceStateIdle) {
-
-    // Pastikan voice processing tidak tertinggal aktif.
-    audio.EnableVoiceProcessing(false);
-
-    // Paksa aktifkan kembali pendeteksi Hi Jason.
-    audio.EnableWakeWordDetection(true);
-
-    // Kembali ke mode hemat daya.
-    Board::GetInstance().SetPowerSaveLevel(
-        PowerSaveLevel::LOW_POWER
-    );
-
-    Board::GetInstance().GetDisplay()->SetStatus(
-        Lang::Strings::STANDBY
-    );
-
-    ESP_LOGI(TAG,
-        "Radio stopped: standby restored, wake word enabled");
-}
-
-ESP_LOGI(TAG, "Radio playback stopped");
+    // Pemulihan Opus/wake word TIDAK dilakukan di sini. Task radio masih
+    // memegang stack 8 KB; pemulihan dijalankan di TaskEntry lewat task
+    // "radio_restore" setelah task ini dihapus.
+    ESP_LOGI(TAG, "Radio stream task finished (free heap %u, largest block %u)",
+             static_cast<unsigned>(esp_get_free_heap_size()),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
 }
