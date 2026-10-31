@@ -750,20 +750,29 @@ void AudioService::StopRadioPlayback(bool restore_wake_word) {
         audio_queue_cv_.notify_all();
     }
 
-    // Buka kembali encoder Opus yang dilepas saat radio mulai.
-    // Decoder dibuka otomatis oleh SetDecodeSampleRate() saat paket suara berikutnya tiba.
-    {
-        std::lock_guard<std::mutex> encoder_lock(g_encoder_mutex);
-        if (g_opus_released_for_radio && opus_encoder_ == nullptr) {
-            if (OpenOpusEncoder(&opus_encoder_, &encoder_frame_size_, &encoder_outbuf_size_)) {
+    // Buka kembali encoder Opus; kalau tetap gagal, restart supaya mic tidak mati.
+    bool encoder_ok = false;
+    for (int attempt = 0; attempt < 5 && !encoder_ok; attempt++) {
+        {
+            std::lock_guard<std::mutex> encoder_lock(g_encoder_mutex);
+            if (!g_opus_released_for_radio || opus_encoder_ != nullptr) {
+                encoder_ok = true;
+            } else if (OpenOpusEncoder(&opus_encoder_, &encoder_frame_size_, &encoder_outbuf_size_)) {
                 encoder_sample_rate_ = 16000;
                 encoder_duration_ms_ = OPUS_FRAME_DURATION_MS;
                 g_opus_released_for_radio = false;
+                encoder_ok = true;
                 ESP_LOGI(TAG, "Opus encoder restored after radio");
-            } else {
-                ESP_LOGE(TAG, "Opus encoder could not be restored; will retry on next audio");
             }
         }
+        if (!encoder_ok) {
+            vTaskDelay(pdMS_TO_TICKS(300));
+        }
+    }
+    if (!encoder_ok) {
+        ESP_LOGE(TAG, "Opus encoder cannot be restored, restarting");
+        vTaskDelay(pdMS_TO_TICKS(500));
+        esp_restart();
     }
 
     if (restore_wake_word && !service_stopped_.load()) {
