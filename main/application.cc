@@ -13,6 +13,7 @@
 
 #include <driver/gpio.h>
 #include <esp_log.h>
+#include <esp_heap_caps.h>
 #include <arpa/inet.h>
 #include <cJSON.h>
 #include <cstring>
@@ -598,7 +599,14 @@ void Application::InitializeProtocol() {
                 });
             } else if (strcmp(state->valuestring, "sentence_start") == 0) {
                 auto text = cJSON_GetObjectItem(root, "text");
-                if (cJSON_IsString(text)) {
+                if (cJSON_IsString(text) && audio_service_.IsRadioPlaybackActive()) {
+                    // Radio diputar: jangan alokasikan glyph/teks chat (alokasi yang
+                    // bertahan memecah heap sehingga encoder Opus gagal dibuka lagi).
+                    ESP_LOGI(TAG, "<< %s (radio: tampilan dilewati, free %u, largest %u)",
+                             text->valuestring,
+                             static_cast<unsigned>(esp_get_free_heap_size()),
+                             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+                } else if (cJSON_IsString(text)) {
                     std::vector<TextGlyph> glyphs;
                     uint8_t bpp = 0;
                     if (!TextGlyphPayload::Parse(root, glyphs, bpp)) {
@@ -614,7 +622,9 @@ void Application::InitializeProtocol() {
             }
         } else if (strcmp(type->valuestring, "stt") == 0) {
             auto text = cJSON_GetObjectItem(root, "text");
-            if (cJSON_IsString(text)) {
+            if (cJSON_IsString(text) && audio_service_.IsRadioPlaybackActive()) {
+                ESP_LOGI(TAG, ">> %s (radio: tampilan dilewati)", text->valuestring);
+            } else if (cJSON_IsString(text)) {
                 std::vector<TextGlyph> glyphs;
                 uint8_t bpp = 0;
                 if (!TextGlyphPayload::Parse(root, glyphs, bpp)) {
@@ -629,7 +639,7 @@ void Application::InitializeProtocol() {
             }
         } else if (strcmp(type->valuestring, "llm") == 0) {
             auto emotion = cJSON_GetObjectItem(root, "emotion");
-            if (cJSON_IsString(emotion)) {
+            if (cJSON_IsString(emotion) && !audio_service_.IsRadioPlaybackActive()) {
                 Schedule([display, emotion_str = std::string(emotion->valuestring)]() {
                     display->SetEmotion(emotion_str.c_str());
                 });
