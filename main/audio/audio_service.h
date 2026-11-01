@@ -144,11 +144,6 @@ public:
     bool PushRadioPcm(std::vector<int16_t>&& pcm, TickType_t wait_ticks = portMAX_DELAY);
     bool IsRadioPlaybackActive() const { return radio_playback_active_.load(); }
 
-    // Radio diminta (tool "Putar Radio") tetapi baru dimulai setelah perangkat idle.
-    // Selama pending, Application tidak boleh menyalakan mic dan harus menutup sesi.
-    bool IsRadioPending() const { return radio_pending_.load(); }
-    void SetRadioPending(bool pending) { radio_pending_.store(pending); }
-
 private:
     AudioCodec* codec_ = nullptr;
     AudioServiceCallbacks callbacks_;
@@ -203,7 +198,6 @@ private:
     std::atomic<bool> service_stopped_{true};
     std::atomic<bool> audio_input_need_warmup_{false};
     std::atomic<bool> radio_playback_active_{false};
-    std::atomic<bool> radio_pending_{false};
     bool radio_restore_wake_word_ = true;
     bool radio_restore_voice_processing_ = false;
 
