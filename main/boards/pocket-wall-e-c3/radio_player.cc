@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cctype>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -35,17 +36,18 @@ namespace {
 // membutuhkan RAM besar di ESP32-C3 dan sebelumnya gagal.
 struct Station {
     const char* name;
+    const char* freq;  // frekuensi FM untuk tampilan layar (periksa lagi kalau berbeda di kotamu)
     const char* url;
 };
 
 constexpr Station kStations[] = {
     // MP3, http (tanpa TLS)
-    {"I-Radio Jakarta",     "http://stream.radiojar.com/4ywdgup3bnzuv"},
-    {"Hard Rock FM 87.6",   "http://stream.radiojar.com/7csmg90fuqruv"},
+    {"I-Radio Jakarta", "89.6", "http://stream.radiojar.com/4ywdgup3bnzuv"},
+    {"Hard Rock FM",    "87.6", "http://stream.radiojar.com/7csmg90fuqruv"},
     // MP3 192 kbps, paling berat, hanya cadangan
-    {"Radio Dangdut 97.1",  "http://202.147.199.99:8000/;"},
+    {"Radio Dangdut",   "97.1", "http://202.147.199.99:8000/;"},
     // MP3 64 kbps, https: cadangan terakhir
-    {"Elshinta FM",         "https://stream-ssl.arenastreaming.com:8000/jakarta"},
+    {"Elshinta FM",     "90.0", "https://stream-ssl.arenastreaming.com:8000/jakarta"},
 };
 constexpr size_t kStationCount = sizeof(kStations) / sizeof(kStations[0]);
 
@@ -95,6 +97,14 @@ bool IsMp3ContentType(const std::string& content_type) {
            value.find("audio/mp3") != std::string::npos ||
            value.find("audio/x-mpeg") != std::string::npos ||
            value.find("application/octet-stream") != std::string::npos;
+}
+
+// Kirim info stasiun ke layar OLED. Format: "RADIO|<nama>|<frekuensi>"
+// (ditangani PocketOledDisplay::SetStatus). "RADIO_END" mengembalikan wajah Wall-E.
+void ShowRadioOnDisplay(const char* name, const char* freq) {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "RADIO|%s|%s", name, freq);
+    Board::GetInstance().GetDisplay()->SetStatus(buf);
 }
 
 // Membuka satu stasiun: ikuti redirect, cek status 200/206 dan Content-Type MP3.
@@ -214,6 +224,7 @@ esp_http_client_handle_t ReconnectStation(
             esp_http_client_handle_t client = ConnectStation(kStations[idx], headers, stop_requested);
             if (client != nullptr) {
                 current_station = idx;
+                ShowRadioOnDisplay(kStations[idx].name, kStations[idx].freq);
                 ESP_LOGI(TAG, "Reconnected to %s", kStations[idx].name);
                 return client;
             }
@@ -373,6 +384,9 @@ void RestoreAfterRadio() {
 
     audio.StopRadioPlayback(true);
 
+    // Kembalikan layar ke wajah Wall-E.
+    Board::GetInstance().GetDisplay()->SetStatus("RADIO_END");
+
     if (app.GetDeviceState() == kDeviceStateIdle) {
         // Pastikan voice processing tidak tertinggal aktif.
         audio.EnableVoiceProcessing(false);
@@ -389,6 +403,18 @@ void RestoreAfterRadio() {
     }
 
     ESP_LOGI(TAG, "Radio playback stopped");
+}
+
+// Task pemulihan dibuat SEBELUM codec Opus dilepas (lihat StartRadio) lalu menunggu
+// notifikasi. Dengan begitu tidak ada alokasi heap baru (stack/TCB) saat radio
+// berhenti, jadi blok heap besar yang dibutuhkan encoder Opus tidak terpotong.
+TaskHandle_t g_restore_task = nullptr;
+
+void DeleteRestoreTask() {
+    if (g_restore_task != nullptr) {
+        vTaskDelete(g_restore_task);
+        g_restore_task = nullptr;
+    }
 }
 
 }  // namespace
@@ -415,15 +441,34 @@ bool RadioPlayer::StartRadio() {
 
     auto& audio = Application::GetInstance().GetAudioService();
 
+    // Tampilan radio dikirim lebih dulu (teks layar statis, tanpa alokasi heap),
+    // dan task pemulihan dibuat sebelum codec dilepas supaya tidak memecah heap.
+    ShowRadioOnDisplay("Menyambung...", "...");
+
+    DeleteRestoreTask();
+    xTaskCreate(
+        [](void* param) {
+            auto* player = static_cast<RadioPlayer*>(param);
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            // Beri waktu idle task membebaskan stack task radio.
+            vTaskDelay(pdMS_TO_TICKS(500));
+            RestoreAfterRadio();
+            g_restore_task = nullptr;
+            player->active_.store(false);
+            vTaskDelete(nullptr);
+        },
+        "radio_restore", 4096, this, 5, &g_restore_task);
+
     if (!audio.StartRadioPlayback()) {
         ESP_LOGE(TAG, "AudioService refused radio playback");
+        DeleteRestoreTask();
+        Board::GetInstance().GetDisplay()->SetStatus("RADIO_END");
         return false;
     }
 
     stop_requested_.store(false);
     startup_state_.store(0);
     active_.store(true);
-    Board::GetInstance().GetDisplay()->SetStatus("RADIO");
     if (xTaskCreate(
             TaskEntry,
             "radio_player",
@@ -435,6 +480,8 @@ bool RadioPlayer::StartRadio() {
         active_.store(false);
         startup_state_.store(-1);
         audio.StopRadioPlayback(true);
+        DeleteRestoreTask();
+        Board::GetInstance().GetDisplay()->SetStatus("RADIO_END");
         ESP_LOGE(TAG, "Cannot create radio task");
         return false;
     }
@@ -481,21 +528,12 @@ void RadioPlayer::TaskEntry(void* arg) {
     self->startup_state_.store(-1);
     self->task_handle_ = nullptr;
 
-    // Pemulihan dijalankan dari task lain setelah task ini dihapus,
-    // supaya stack 8 KB task radio ikut bebas dan blok heap utuh lagi.
-    const BaseType_t created = xTaskCreate(
-        [](void* param) {
-            auto* player = static_cast<RadioPlayer*>(param);
-            // Beri waktu idle task membebaskan stack task radio.
-            vTaskDelay(pdMS_TO_TICKS(500));
-            RestoreAfterRadio();
-            player->active_.store(false);
-            vTaskDelete(nullptr);
-        },
-        "radio_restore", 4096, self, 5, nullptr);
-
-    if (created != pdPASS) {
-        ESP_LOGE(TAG, "Cannot create restore task, restoring inline");
+    if (g_restore_task != nullptr) {
+        // Bangunkan task pemulihan yang sudah disiapkan; dia menunggu 500 ms
+        // supaya stack task ini sudah dibebaskan sebelum encoder Opus dibuat.
+        xTaskNotifyGive(g_restore_task);
+    } else {
+        ESP_LOGW(TAG, "No restore task, restoring inline");
         RestoreAfterRadio();
         self->active_.store(false);
     }
@@ -544,6 +582,7 @@ void RadioPlayer::TaskLoop() {
             client = ConnectStation(kStations[i], response_headers, stop_requested_);
             if (client != nullptr) {
                 current_station = i;
+                ShowRadioOnDisplay(kStations[i].name, kStations[i].freq);
                 ESP_LOGI(TAG, "Connected to %s", kStations[i].name);
                 break;
             }

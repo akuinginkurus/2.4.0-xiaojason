@@ -64,6 +64,9 @@ private:
     lv_obj_t* radio_bars_[kRadioBarCount] = {};
     int radio_bar_height_[kRadioBarCount] = {};
     bool radio_active_ = false;
+    // Teks label radio memakai buffer statis supaya tidak ada alokasi heap saat radio jalan.
+    char radio_name_buf_[40] = {0};
+    char radio_freq_buf_[12] = {0};
 
     FaceMode face_mode_ = FaceMode::kNeutral;
     uint32_t animation_tick_ = 0;

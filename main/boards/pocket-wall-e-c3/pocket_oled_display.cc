@@ -2,10 +2,14 @@
 
 #include "assets/lang_config.h"
 
+#include <esp_log.h>
+
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+
+#define TAG "PocketOled"
 
 namespace {
 // An original LVGL implementation inspired by the visual behavior documented by
@@ -197,7 +201,7 @@ void PocketOledDisplay::BuildRadioUI(lv_obj_t* screen) {
     lv_obj_set_style_text_color(radio_name_, lv_color_white(), 0);
     lv_obj_set_style_text_align(radio_name_, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(radio_name_, LV_LABEL_LONG_SCROLL_CIRCULAR);
-    lv_label_set_text(radio_name_, "");
+    lv_label_set_text_static(radio_name_, radio_name_buf_);
 
     // Frekuensi besar.
     radio_freq_ = lv_label_create(radio_layer_);
@@ -209,12 +213,12 @@ void PocketOledDisplay::BuildRadioUI(lv_obj_t* screen) {
     if (const lv_font_t* big = PickBigFont()) {
         lv_obj_set_style_text_font(radio_freq_, big, 0);
     }
-    lv_label_set_text(radio_freq_, "");
+    lv_label_set_text_static(radio_freq_, radio_freq_buf_);
 
     radio_fm_ = lv_label_create(radio_layer_);
     lv_obj_set_pos(radio_fm_, 106, 40);
     lv_obj_set_style_text_color(radio_fm_, lv_color_white(), 0);
-    lv_label_set_text(radio_fm_, "FM");
+    lv_label_set_text_static(radio_fm_, "FM");
 
     // Skala dial: garis dasar dengan tanda panjang/pendek.
     static lv_point_precise_t dial_points[kRadioDialTicks * 3 + 1];
@@ -259,8 +263,12 @@ void PocketOledDisplay::ShowRadio(const char* payload) {
 
     const bool numeric = freq[0] >= '0' && freq[0] <= '9';
 
-    lv_label_set_text(radio_name_, name);
-    lv_label_set_text(radio_freq_, freq[0] != '\0' ? freq : "LIVE");
+    // Salin ke buffer statis lalu minta label menampilkannya (tanpa malloc).
+    std::snprintf(radio_name_buf_, sizeof(radio_name_buf_), "%s", name);
+    std::snprintf(radio_freq_buf_, sizeof(radio_freq_buf_), "%s", freq[0] != '\0' ? freq : "LIVE");
+    lv_label_set_text_static(radio_name_, radio_name_buf_);
+    lv_label_set_text_static(radio_freq_, radio_freq_buf_);
+    ESP_LOGI(TAG, "Radio screen: %s %s", radio_name_buf_, radio_freq_buf_);
 
     if (numeric) {
         lv_obj_remove_flag(radio_fm_, LV_OBJ_FLAG_HIDDEN);
@@ -304,7 +312,8 @@ void PocketOledDisplay::UpdateRadioFrame() {
 
 void PocketOledDisplay::SetStatus(const char* status) {
     if (status != nullptr && std::strncmp(status, "RADIO|", 6) == 0) {
-        OledDisplay::SetStatus("RADIO");
+        // Sengaja tidak memanggil OledDisplay::SetStatus: layar radio menutupi status bar,
+        // dan kita menghindari alokasi heap selama radio.
         DisplayLockGuard lock(this);
         ShowRadio(status + 6);
         return;
@@ -320,14 +329,18 @@ void PocketOledDisplay::SetStatus(const char* status) {
         return;
     }
 
+    // Selama radio diputar, semua pembaruan tampilan dari Application (status, emosi,
+    // pesan chat TTS) diabaikan sepenuhnya: tidak menimpa layar radio, dan tidak
+    // membuat alokasi teks LVGL baru yang bisa memecah heap tepat saat codec Opus
+    // dilepas (penyebab encoder gagal dipulihkan lalu restart).
+    if (radio_active_) {
+        return;
+    }
+
     OledDisplay::SetStatus(status);
     DisplayLockGuard lock(this);
 
     if (status == nullptr) {
-        return;
-    }
-    // Selama radio diputar, perubahan status lain tidak boleh menimpa layar radio.
-    if (radio_active_) {
         return;
     }
     if (std::strcmp(status, Lang::Strings::LISTENING) == 0) {
@@ -346,12 +359,18 @@ void PocketOledDisplay::SetStatus(const char* status) {
 }
 
 void PocketOledDisplay::SetEmotion(const char* emotion) {
+    if (radio_active_) {
+        return;
+    }
     OledDisplay::SetEmotion(emotion);
     DisplayLockGuard lock(this);
     SetFaceMode(FaceModeFromEmotion(emotion));
 }
 
 void PocketOledDisplay::SetChatMessage(const char* role, const char* content) {
+    if (radio_active_) {
+        return;
+    }
     DisplayLockGuard lock(this);
 
     has_chat_text_ = content != nullptr && content[0] != '\0';
@@ -365,6 +384,9 @@ void PocketOledDisplay::SetChatMessage(const char* role, const char* content) {
 }
 
 void PocketOledDisplay::ClearChatMessages() {
+    if (radio_active_) {
+        return;
+    }
     DisplayLockGuard lock(this);
     has_chat_text_ = false;
     if (chat_line_ != nullptr) {
@@ -597,8 +619,9 @@ void PocketOledDisplay::UpdateAnimationFrame() {
         lv_obj_set_size(left_top_lid_, lid_width, lid_height);
         lv_obj_set_pos(right_top_lid_, right_x - 4, right_y - 2);
         lv_obj_set_size(right_top_lid_, lid_width, lid_height);
-        lv_obj_set_style_transform_rotation(left_top_lid_, angry ? -140 : 140, 0);
-        lv_obj_set_style_transform_rotation(right_top_lid_, angry ? 140 : -140, 0);
+        // Marah dan sedih ditukar: arah miring kelopak dibalik.
+        lv_obj_set_style_transform_rotation(left_top_lid_, angry ? 140 : -140, 0);
+        lv_obj_set_style_transform_rotation(right_top_lid_, angry ? -140 : 140, 0);
     }
 
     if (!blink && (face_mode_ == FaceMode::kHappy || face_mode_ == FaceMode::kSpeaking)) {
