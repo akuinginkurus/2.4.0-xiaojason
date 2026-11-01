@@ -243,6 +243,12 @@ void PocketOledDisplay::BuildRadioUI(lv_obj_t* screen) {
     lv_obj_set_style_text_color(radio_fm_, lv_color_white(), 0);
     lv_label_set_text_static(radio_fm_, "FM");
 
+    // Satuan MHz (statis).
+    auto* radio_unit_ = lv_label_create(radio_layer_);
+    lv_obj_set_pos(radio_unit_, 70, 27);
+    lv_obj_set_style_text_color(radio_unit_, lv_color_white(), 0);
+    lv_label_set_text_static(radio_unit_, "MHz");
+
     // Skala dial: garis dasar dengan tanda panjang/pendek.
     static lv_point_precise_t dial_points[kRadioDialTicks * 3 + 1];
     int n = 0;
