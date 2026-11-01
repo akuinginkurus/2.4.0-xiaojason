@@ -730,9 +730,10 @@ bool AudioService::StartRadioPlayback() {
         // Paksa SetDecodeSampleRate() membuka decoder lagi setelah radio berhenti.
         decoder_sample_rate_ = 0;
     }
-    ESP_LOGI(TAG, "Opus codecs released for radio: free heap %u -> %u",
+    ESP_LOGI(TAG, "Opus codecs released for radio: free heap %u -> %u (largest block %u)",
              static_cast<unsigned>(free_before),
-             static_cast<unsigned>(esp_get_free_heap_size()));
+             static_cast<unsigned>(esp_get_free_heap_size()),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
 
     ESP_LOGI(TAG, "Radio playback started; voice processing and wake word disabled");
     return true;
