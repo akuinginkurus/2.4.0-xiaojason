@@ -60,10 +60,6 @@ constexpr int kConnectTimeoutMs = 8000;
 constexpr int kStartupTimeoutMs = 30000;
 // Kalau tidak ada data masuk selama ini, anggap stream putus lalu sambung ulang.
 constexpr int64_t kStallTimeoutUs = 3000000;
-// Radio baru dimulai setelah perangkat idle (balasan suara selesai, sesi ditutup).
-// Kalau tidak idle dalam waktu ini, permintaan radio dibatalkan.
-constexpr int kPendingTimeoutMs = 60000;
-constexpr int kIdlePollMs = 200;
 
 struct HttpResponseHeaders {
     std::string content_type;
@@ -376,9 +372,8 @@ bool ConvertAndQueue(
     return true;
 }
 
-// Dijalankan dari task launcher setelah task radio selesai (dan stack-nya sudah
-// bebas). Encoder Opus tidak pernah dilepas, jadi di sini hanya decoder yang
-// dibuka lagi dan wake word diaktifkan kembali.
+// Dijalankan dari task terpisah setelah task radio dihapus, supaya stack task
+// radio sudah bebas dan encoder Opus bisa mendapat blok heap yang utuh.
 void RestoreAfterRadio() {
     auto& app = Application::GetInstance();
     auto& audio = app.GetAudioService();
@@ -410,6 +405,18 @@ void RestoreAfterRadio() {
     ESP_LOGI(TAG, "Radio playback stopped");
 }
 
+// Task pemulihan dibuat SEBELUM codec Opus dilepas (lihat StartRadio) lalu menunggu
+// notifikasi. Dengan begitu tidak ada alokasi heap baru (stack/TCB) saat radio
+// berhenti, jadi blok heap besar yang dibutuhkan encoder Opus tidak terpotong.
+TaskHandle_t g_restore_task = nullptr;
+
+void DeleteRestoreTask() {
+    if (g_restore_task != nullptr) {
+        vTaskDelete(g_restore_task);
+        g_restore_task = nullptr;
+    }
+}
+
 }  // namespace
 
 RadioPlayer::RadioPlayer() = default;
@@ -418,133 +425,50 @@ RadioPlayer::~RadioPlayer() {
     RequestStop();
 }
 
-// Dipanggil dari tool "self.radio.play". Tidak memblokir dan tidak menyentuh
-// codec: balasan suara server ("Radio sudah diputar...") masih harus diputar,
-// lalu sesi ditutup oleh Application, baru radio dimulai (lihat LauncherLoop).
 bool RadioPlayer::StartRadio() {
     if (active_.load()) {
-        return pending_.load() || startup_state_.load() == 1;
-    }
+        if (startup_state_.load() == 1) {
+            ESP_LOGI(TAG, "Radio is already playing");
+            return true;
+        }
 
-    auto& audio = Application::GetInstance().GetAudioService();
+        if (startup_state_.load() == 0) {
+            ESP_LOGW(TAG, "Radio startup is still in progress");
+        }
 
-    stop_requested_.store(false);
-    startup_state_.store(0);
-    pending_.store(true);
-    active_.store(true);
-    audio.SetRadioPending(true);
-
-    if (xTaskCreate(
-            LauncherEntry,
-            "radio_launcher",
-            4096,
-            this,
-            5,
-            &launcher_handle_) != pdPASS) {
-        launcher_handle_ = nullptr;
-        pending_.store(false);
-        active_.store(false);
-        audio.SetRadioPending(false);
-        ESP_LOGE(TAG, "Cannot create radio launcher task");
         return false;
     }
 
-    ESP_LOGI(TAG, "Radio requested; it will start when the device is idle");
-    return true;
-}
-
-void RadioPlayer::RequestStop() {
-    stop_requested_.store(true);
-}
-
-void RadioPlayer::LauncherEntry(void* arg) {
-    static_cast<RadioPlayer*>(arg)->LauncherLoop();
-}
-
-void RadioPlayer::LauncherLoop() {
-    auto& app = Application::GetInstance();
-    auto& audio = app.GetAudioService();
-
-    launcher_handle_ = xTaskGetCurrentTaskHandle();
-
-    // 1. Tunggu sampai balasan suara selesai dan sesi ditutup (state idle).
-    bool idle = false;
-    int waited_ms = 0;
-    while (!stop_requested_.load() && waited_ms < kPendingTimeoutMs) {
-        if (app.GetDeviceState() == kDeviceStateIdle && audio.IsPlaybackIdle()) {
-            idle = true;
-            break;
-        }
-        vTaskDelay(pdMS_TO_TICKS(kIdlePollMs));
-        waited_ms += kIdlePollMs;
-    }
-
-    if (idle) {
-        // Beri waktu main loop menerapkan tampilan idle sebelum layar radio.
-        vTaskDelay(pdMS_TO_TICKS(300));
-        idle = (app.GetDeviceState() == kDeviceStateIdle);
-    }
-
-    // 2. Mulai radio (hanya decoder Opus yang dilepas; encoder tetap).
-    bool task_created = false;
-    if (idle && !stop_requested_.load()) {
-        task_created = StartNow();
-    } else if (!stop_requested_.load()) {
-        ESP_LOGW(TAG, "Radio request expired: device never became idle");
-    } else {
-        ESP_LOGI(TAG, "Radio request cancelled before start");
-    }
-
-    // Setelah radio aktif (atau permintaan batal), status pending boleh dicabut.
-    audio.SetRadioPending(false);
-    pending_.store(false);
-
-    // 3. Tunggu startup, lalu tunggu task radio selesai, lalu pulihkan audio.
-    if (task_created) {
-        int elapsed_ms = 0;
-        while (elapsed_ms < kStartupTimeoutMs && startup_state_.load() == 0) {
-            vTaskDelay(pdMS_TO_TICKS(100));
-            elapsed_ms += 100;
-        }
-
-        const int state = startup_state_.load();
-        if (state == 1) {
-            ESP_LOGI(TAG, "Radio startup confirmed");
-        } else if (state == 0) {
-            ESP_LOGE(TAG, "Radio startup timeout");
-            stop_requested_.store(true);
-        } else {
-            ESP_LOGE(TAG, "Radio startup failed");
-        }
-
-        // Dibangunkan oleh TaskEntry saat task radio selesai.
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-
-        // Beri waktu idle task membebaskan stack task radio.
-        vTaskDelay(pdMS_TO_TICKS(500));
-        RestoreAfterRadio();
-    }
-
-    active_.store(false);
-    launcher_handle_ = nullptr;
-    vTaskDelete(nullptr);
-}
-
-bool RadioPlayer::StartNow() {
     auto& audio = Application::GetInstance().GetAudioService();
 
+    // Tampilan radio dikirim lebih dulu (teks layar statis, tanpa alokasi heap),
+    // dan task pemulihan dibuat sebelum codec dilepas supaya tidak memecah heap.
     ShowRadioOnDisplay("Menyambung...", "...");
+
+    DeleteRestoreTask();
+    xTaskCreate(
+        [](void* param) {
+            auto* player = static_cast<RadioPlayer*>(param);
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            // Beri waktu idle task membebaskan stack task radio.
+            vTaskDelay(pdMS_TO_TICKS(500));
+            RestoreAfterRadio();
+            g_restore_task = nullptr;
+            player->active_.store(false);
+            vTaskDelete(nullptr);
+        },
+        "radio_restore", 4096, this, 5, &g_restore_task);
 
     if (!audio.StartRadioPlayback()) {
         ESP_LOGE(TAG, "AudioService refused radio playback");
+        DeleteRestoreTask();
         Board::GetInstance().GetDisplay()->SetStatus("RADIO_END");
         return false;
     }
 
-    // Radio memerlukan Wi-Fi tanpa hemat daya.
-    Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
-
+    stop_requested_.store(false);
     startup_state_.store(0);
+    active_.store(true);
     if (xTaskCreate(
             TaskEntry,
             "radio_player",
@@ -553,14 +477,46 @@ bool RadioPlayer::StartNow() {
             5,
             &task_handle_) != pdPASS) {
         task_handle_ = nullptr;
+        active_.store(false);
         startup_state_.store(-1);
         audio.StopRadioPlayback(true);
+        DeleteRestoreTask();
         Board::GetInstance().GetDisplay()->SetStatus("RADIO_END");
         ESP_LOGE(TAG, "Cannot create radio task");
         return false;
     }
 
-    return true;
+    int elapsed_ms = 0;
+
+    while (elapsed_ms < kStartupTimeoutMs) {
+        const int state = startup_state_.load();
+
+        if (state == 1) {
+            ESP_LOGI(TAG, "Radio startup confirmed");
+            return true;
+        }
+
+        if (state == -1) {
+            ESP_LOGE(TAG, "Radio startup failed");
+            return false;
+        }
+
+        if (!active_.load()) {
+            ESP_LOGE(TAG, "Radio task stopped during startup");
+            return false;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(100));
+        elapsed_ms += 100;
+    }
+
+    ESP_LOGE(TAG, "Radio startup timeout");
+    stop_requested_.store(true);
+    return false;
+}
+
+void RadioPlayer::RequestStop() {
+    stop_requested_.store(true);
 }
 
 void RadioPlayer::TaskEntry(void* arg) {
@@ -568,14 +524,18 @@ void RadioPlayer::TaskEntry(void* arg) {
     self->TaskLoop();
 
     // Tandai selesai supaya StartRadio() tidak mengira radio masih berjalan.
-    // active_ tetap true sampai pemulihan audio selesai (dipegang launcher).
+    // active_ tetap true sampai pemulihan audio selesai.
     self->startup_state_.store(-1);
     self->task_handle_ = nullptr;
 
-    if (self->launcher_handle_ != nullptr) {
-        // Bangunkan launcher; dia menunggu 500 ms supaya stack task ini
-        // sudah dibebaskan sebelum memulihkan audio.
-        xTaskNotifyGive(self->launcher_handle_);
+    if (g_restore_task != nullptr) {
+        // Bangunkan task pemulihan yang sudah disiapkan; dia menunggu 500 ms
+        // supaya stack task ini sudah dibebaskan sebelum encoder Opus dibuat.
+        xTaskNotifyGive(g_restore_task);
+    } else {
+        ESP_LOGW(TAG, "No restore task, restoring inline");
+        RestoreAfterRadio();
+        self->active_.store(false);
     }
 
     vTaskDelete(nullptr);
@@ -880,9 +840,9 @@ void RadioPlayer::TaskLoop() {
         startup_state_.store(-1);
     }
 
-    // Pemulihan audio/wake word TIDAK dilakukan di sini. Task radio masih
-    // memegang stack 8 KB; pemulihan dijalankan oleh task "radio_launcher"
-    // setelah task ini dihapus (lihat TaskEntry dan LauncherLoop).
+    // Pemulihan Opus/wake word TIDAK dilakukan di sini. Task radio masih
+    // memegang stack 8 KB; pemulihan dijalankan di TaskEntry lewat task
+    // "radio_restore" setelah task ini dihapus.
     ESP_LOGI(TAG, "Radio stream task finished (free heap %u, largest block %u)",
              static_cast<unsigned>(esp_get_free_heap_size()),
              static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
