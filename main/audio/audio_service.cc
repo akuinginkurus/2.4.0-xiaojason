@@ -100,10 +100,13 @@ void AudioService::Initialize(AudioCodec* codec) {
         decoder_frame_size_ = decoder_sample_rate_ / 1000 * OPUS_FRAME_DURATION_MS;
     }
     esp_opus_enc_config_t opus_enc_cfg = AS_OPUS_ENC_CONFIG();
+    const size_t enc_free_before = esp_get_free_heap_size();
     ret = esp_opus_enc_open(&opus_enc_cfg, sizeof(esp_opus_enc_config_t), &opus_encoder_);
     if (opus_encoder_ == nullptr) {
         ESP_LOGE(TAG, "Failed to create audio encoder, error code: %d", ret);
     } else {
+        ESP_LOGI(TAG, "Opus encoder uses about %u bytes of heap",
+                 static_cast<unsigned>(enc_free_before - esp_get_free_heap_size()));
         encoder_sample_rate_ = 16000;
         encoder_duration_ms_ = OPUS_FRAME_DURATION_MS;
         esp_opus_enc_get_frame_size(opus_encoder_, &encoder_frame_size_, &encoder_outbuf_size_);
@@ -565,9 +568,14 @@ void AudioService::OpusCodecTask() {
                 }
             } else {
                 encoder_lock.unlock();
-                if (!radio_playback_active_.load()) {
-                    ESP_LOGE(TAG, "Failed to encode audio: encoder not configured or invalid frame size (got %u, expected %u)",
-                             task->pcm.size(), encoder_frame_size_);
+                // Dibatasi 1x per 3 detik supaya log tidak membanjir (tiap 60 ms).
+                static int64_t last_encode_error_log_us = 0;
+                if (!radio_playback_active_.load() &&
+                    esp_timer_get_time() - last_encode_error_log_us >= 3000000) {
+                    last_encode_error_log_us = esp_timer_get_time();
+                    ESP_LOGE(TAG, "Failed to encode audio: encoder not configured or invalid frame size (got %u, expected %u, largest block %u)",
+                             task->pcm.size(), encoder_frame_size_,
+                             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
                 }
             }
             lock.lock();
@@ -602,6 +610,11 @@ void AudioService::SetDecodeSampleRate(int sample_rate, int frame_duration) {
     decoder_frame_size_ = decoder_sample_rate_ / 1000 * frame_duration;
 
     auto codec = Board::GetInstance().GetAudioCodec();
+    if (decoder_sample_rate_ == codec->output_sample_rate() && output_resampler_ != nullptr) {
+        // Tidak perlu resampler lagi; lepaskan supaya blok heap ~10 KB tidak tertahan.
+        esp_ae_rate_cvt_close(output_resampler_);
+        output_resampler_ = nullptr;
+    }
     if (decoder_sample_rate_ != codec->output_sample_rate()) {
         ESP_LOGI(TAG, "Resampling audio from %d to %d", decoder_sample_rate_, codec->output_sample_rate());
         if (output_resampler_ != nullptr) {
@@ -788,8 +801,12 @@ void AudioService::StopRadioPlayback(bool restore_wake_word) {
         ESP_LOGW(TAG, "Opus encoder not restored yet, will retry lazily (no restart)");
     }
 
-    // Buka decoder Opus sekarang, selagi heap masih utuh (sebelum MQTT/TLS membukanya lagi).
-    SetDecodeSampleRate(16000, OPUS_FRAME_DURATION_MS);
+    // Buka decoder Opus pada sample rate codec (sama seperti saat boot, tanpa resampler).
+    // Kalau encoder belum pulih, JANGAN buka decoder sekarang: biarkan encoder yang
+    // mendapat blok heap terbesar lebih dulu (decoder dibuka lazy oleh OpusCodecTask).
+    if (encoder_ok) {
+        SetDecodeSampleRate(codec_->output_sample_rate(), OPUS_FRAME_DURATION_MS);
+    }
 
     if (restore_wake_word && !service_stopped_.load()) {
         if (radio_restore_voice_processing_) {
