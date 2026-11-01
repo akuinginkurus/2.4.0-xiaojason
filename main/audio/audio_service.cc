@@ -816,7 +816,9 @@ void AudioService::StopRadioPlayback(bool restore_wake_word) {
         return false;
     };
 
-    constexpr int kMaxRestoreAttempts = 6;
+    // Percobaan ulang tidak pernah berhasil di log nyata (blok heap terbesar
+    // ~20 KB < 24.6 KB yang dibutuhkan encoder). Cukup satu kali, lalu restart cepat.
+    constexpr int kMaxRestoreAttempts = 1;
     bool encoder_ok = false;
     bool decoder_ok = false;
     for (int attempt = 0; attempt < kMaxRestoreAttempts && !(encoder_ok && decoder_ok); attempt++) {
@@ -833,7 +835,9 @@ void AudioService::StopRadioPlayback(bool restore_wake_word) {
                      static_cast<unsigned>(esp_get_free_heap_size()),
                      static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
             // Lebih lama dari jeda minimum percobaan ulang decoder (500 ms).
-            vTaskDelay(pdMS_TO_TICKS(600));
+            if (attempt + 1 < kMaxRestoreAttempts) {
+                vTaskDelay(pdMS_TO_TICKS(600));
+            }
         }
     }
     if (!(encoder_ok && decoder_ok)) {
