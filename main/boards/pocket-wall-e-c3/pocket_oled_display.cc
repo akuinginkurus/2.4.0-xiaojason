@@ -60,6 +60,13 @@ const lv_font_t* PickBigFont() {
 #endif
 }
 
+// Ekspresi marah/sedih: garis hitam tebal "memotong" sisi atas mata secara miring,
+// sehingga bentuk mata itu sendiri yang miring (bukan alis terpisah). Tanpa rotasi
+// objek, jadi LVGL tidak perlu membuat layer sementara tiap frame.
+constexpr int kBrowThickness = 22;
+lv_obj_t* g_brow_line[2] = {nullptr, nullptr};
+lv_point_precise_t g_brow_pts[2][2] = {};
+
 void StyleLine(lv_obj_t* line, int width) {
     lv_obj_set_style_line_width(line, width, 0);
     lv_obj_set_style_line_color(line, lv_color_white(), 0);
@@ -89,6 +96,9 @@ PocketOledDisplay::~PocketOledDisplay() {
         lv_obj_delete(face_layer_);
         face_layer_ = nullptr;
     }
+    // Garis pemotong adalah anak face_layer_, ikut terhapus bersamanya.
+    g_brow_line[0] = nullptr;
+    g_brow_line[1] = nullptr;
 }
 
 void PocketOledDisplay::SetupUI() {
@@ -124,6 +134,19 @@ void PocketOledDisplay::SetupUI() {
         lv_obj_set_style_bg_opa(lid, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(lid, 6, 0);
         lv_obj_add_flag(lid, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    for (int i = 0; i < 2; ++i) {
+        g_brow_line[i] = lv_line_create(face_layer_);
+        PrepareShape(g_brow_line[i]);
+        lv_obj_set_pos(g_brow_line[i], 0, 0);
+        lv_obj_set_size(g_brow_line[i], 128, 48);
+        StyleLine(g_brow_line[i], kBrowThickness);
+        lv_obj_set_style_line_color(g_brow_line[i], lv_color_black(), 0);
+        g_brow_pts[i][0] = {0, 0};
+        g_brow_pts[i][1] = {0, 0};
+        lv_line_set_points(g_brow_line[i], g_brow_pts[i], 2);
+        lv_obj_add_flag(g_brow_line[i], LV_OBJ_FLAG_HIDDEN);
     }
 
     chat_line_ = lv_label_create(screen);
@@ -544,7 +567,7 @@ void PocketOledDisplay::UpdateAnimationFrame() {
             break;
         case FaceMode::kSad:
         case FaceMode::kAngry:
-            left_target = right_target = 30;
+            left_target = right_target = 32;
             break;
         case FaceMode::kSleepy:
             left_target = right_target = 8 - breath;
@@ -606,22 +629,55 @@ void PocketOledDisplay::UpdateAnimationFrame() {
 
     for (auto* lid : {left_top_lid_, right_top_lid_, left_bottom_lid_, right_bottom_lid_}) {
         lv_obj_add_flag(lid, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_style_transform_rotation(lid, 0, 0);
     }
 
-    constexpr int lid_height = 10;
-    if (!blink && (face_mode_ == FaceMode::kAngry || face_mode_ == FaceMode::kSad)) {
+    // ---- Marah / sedih: potong sisi atas mata secara miring ----
+    // Marah: sisi dalam mata turun ("\ /"). Sedih: sisi luar mata turun ("/ \").
+    const bool slant = !blink && (face_mode_ == FaceMode::kAngry || face_mode_ == FaceMode::kSad);
+    for (int i = 0; i < 2; ++i) {
+        lv_obj_t* line = g_brow_line[i];
+        if (line == nullptr) {
+            continue;
+        }
+        if (!slant) {
+            if (!lv_obj_has_flag(line, LV_OBJ_FLAG_HIDDEN)) {
+                lv_obj_add_flag(line, LV_OBJ_FLAG_HIDDEN);
+            }
+            continue;
+        }
+
+        const bool is_left = (i == 0);
         const bool angry = face_mode_ == FaceMode::kAngry;
-        const int lid_width = eye_width + 8;
-        lv_obj_remove_flag(left_top_lid_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(right_top_lid_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_pos(left_top_lid_, left_x - 4, left_y - 2);
-        lv_obj_set_size(left_top_lid_, lid_width, lid_height);
-        lv_obj_set_pos(right_top_lid_, right_x - 4, right_y - 2);
-        lv_obj_set_size(right_top_lid_, lid_width, lid_height);
-        // Marah dan sedih ditukar: arah miring kelopak dibalik.
-        lv_obj_set_style_transform_rotation(left_top_lid_, angry ? 140 : -140, 0);
-        lv_obj_set_style_transform_rotation(right_top_lid_, angry ? -140 : 140, 0);
+        const int ex = is_left ? left_x : right_x;
+        const int ey = is_left ? left_y : right_y;
+        const int eh = is_left ? current_eye_height_ : current_right_eye_height_;
+        const int drop = std::max(4, std::min(14, eh * 2 / 5));
+
+        // Sisi dalam mata kiri ada di kanan, sisi dalam mata kanan ada di kiri.
+        const bool right_side_low = angry ? is_left : !is_left;
+        const int edge_left_y = ey + (right_side_low ? 1 : drop);
+        const int edge_right_y = ey + (right_side_low ? drop : 1);
+        const int dy = edge_right_y - edge_left_y;
+
+        // Perpanjang garis 8 px ke tiap sisi dengan kemiringan yang sama, lalu geser
+        // ke atas setengah ketebalan supaya tepi bawah garis tepat di tepi potongan.
+        const int ext = 8;
+        const int ext_dy = dy * ext / eye_width;
+        const int shift = kBrowThickness / 2 + std::abs(dy) / 8;
+        const int x0 = ex - ext;
+        const int y0 = edge_left_y - ext_dy - shift;
+        const int x1 = ex + eye_width + ext;
+        const int y1 = edge_right_y + ext_dy - shift;
+
+        if (g_brow_pts[i][0].x != x0 || g_brow_pts[i][0].y != y0 ||
+            g_brow_pts[i][1].x != x1 || g_brow_pts[i][1].y != y1) {
+            g_brow_pts[i][0] = {x0, y0};
+            g_brow_pts[i][1] = {x1, y1};
+            lv_line_set_points(line, g_brow_pts[i], 2);
+        }
+        if (lv_obj_has_flag(line, LV_OBJ_FLAG_HIDDEN)) {
+            lv_obj_remove_flag(line, LV_OBJ_FLAG_HIDDEN);
+        }
     }
 
     if (!blink && (face_mode_ == FaceMode::kHappy || face_mode_ == FaceMode::kSpeaking)) {
