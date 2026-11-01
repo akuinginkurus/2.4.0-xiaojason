@@ -984,16 +984,9 @@ void Application::HandleStateChangedEvent() {
             // BARU: selama radio, jangan pernah menyalakan mic/voice processing.
             // Tutup sesi chat -> OnAudioChannelClosed -> state kembali ke Idle
             // (cabang radio di atas).
-            if (audio_service_.IsRadioPlaybackActive() || audio_service_.IsRadioPending()) {
-                // Radio sedang/akan diputar: jangan nyalakan mic. Tutup sesi setelah
-                // suara balasan selesai diputar (lihat StartListeningAudio) supaya
-                // perangkat idle dan radio bisa dimulai dengan heap bersih.
-                if (audio_service_.IsPlaybackIdle()) {
-                    if (protocol_) {
-                        protocol_->CloseAudioChannel();
-                    }
-                } else {
-                    pending_listening_start_ = true;
+            if (audio_service_.IsRadioPlaybackActive()) {
+                if (protocol_) {
+                    protocol_->CloseAudioChannel();
                 }
                 break;
             }
@@ -1044,13 +1037,6 @@ void Application::StartListeningAudio() {
     // Runs in the main loop, either directly from HandleStateChangedEvent or
     // deferred via MAIN_EVENT_PLAYBACK_DRAINED once the playback queue drains.
     if (GetDeviceState() != kDeviceStateListening) {
-        return;
-    }
-
-    if (audio_service_.IsRadioPlaybackActive() || audio_service_.IsRadioPending()) {
-        if (protocol_) {
-            protocol_->CloseAudioChannel();
-        }
         return;
     }
 
@@ -1197,7 +1183,7 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
 }
 
 bool Application::CanEnterSleepMode() {
-    if (audio_service_.IsRadioPlaybackActive() || audio_service_.IsRadioPending()) {
+    if (audio_service_.IsRadioPlaybackActive()) {
         return false;
     }
     if (GetDeviceState() != kDeviceStateIdle) {
