@@ -599,12 +599,22 @@ void AudioService::SetDecodeSampleRate(int sample_rate, int frame_duration) {
         opus_decoder_ = nullptr;
     }
     decoder_lock.unlock();
+    // Batasi percobaan ulang setelah gagal (maks 1x per 500 ms) supaya tidak
+    // membanjiri log dan tidak menghabiskan CPU di setiap paket audio.
+    static int64_t last_decoder_fail_us = 0;
+    const int64_t now_us = esp_timer_get_time();
+    if (last_decoder_fail_us != 0 && now_us - last_decoder_fail_us < 500000) {
+        return;
+    }
     esp_opus_dec_cfg_t opus_dec_cfg = OPUS_DEC_CFG(sample_rate, frame_duration);
     auto ret = esp_opus_dec_open(&opus_dec_cfg, sizeof(esp_opus_dec_cfg_t), &opus_decoder_);
     if (opus_decoder_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to create audio decoder, error code: %d", ret);
+        last_decoder_fail_us = now_us;
+        ESP_LOGE(TAG, "Failed to create audio decoder, error code: %d (largest block %u)", ret,
+                 static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
         return;
     }
+    last_decoder_fail_us = 0;
     decoder_sample_rate_ = sample_rate;
     decoder_duration_ms_ = frame_duration;
     decoder_frame_size_ = decoder_sample_rate_ / 1000 * frame_duration;
@@ -772,40 +782,73 @@ void AudioService::StopRadioPlayback(bool restore_wake_word) {
         audio_queue_cv_.notify_all();
     }
 
-    // Buka kembali encoder Opus. Coba beberapa kali saja. Kalau tetap gagal,
-    // JANGAN restart: wake word tidak butuh encoder, dan OpusCodecTask akan
-    // mencoba lagi (1x per 500 ms) begitu ada audio yang perlu di-encode.
-    bool encoder_ok = false;
-    for (int attempt = 0; attempt < 3 && !encoder_ok; attempt++) {
+    // Buka kembali encoder dan decoder Opus. Heap sering terfragmentasi tepat
+    // setelah radio berhenti, sehingga salah satu codec gagal dibuka (error -7).
+    // Coba beberapa putaran dengan jeda, dan bergantian urutan buka (encoder dulu,
+    // lalu decoder dulu) supaya blok heap terbesar dipakai bergantian.
+    auto try_open_encoder = [this]() -> bool {
+        std::lock_guard<std::mutex> encoder_lock(g_encoder_mutex);
+        if (!g_opus_released_for_radio || opus_encoder_ != nullptr) {
+            return true;
+        }
+        if (OpenOpusEncoder(&opus_encoder_, &encoder_frame_size_, &encoder_outbuf_size_)) {
+            encoder_sample_rate_ = 16000;
+            encoder_duration_ms_ = OPUS_FRAME_DURATION_MS;
+            g_opus_released_for_radio = false;
+            ESP_LOGI(TAG, "Opus encoder restored after radio");
+            return true;
+        }
+        return false;
+    };
+    auto try_open_decoder = [this]() -> bool {
         {
-            std::lock_guard<std::mutex> encoder_lock(g_encoder_mutex);
-            if (!g_opus_released_for_radio || opus_encoder_ != nullptr) {
-                encoder_ok = true;
-            } else if (OpenOpusEncoder(&opus_encoder_, &encoder_frame_size_, &encoder_outbuf_size_)) {
-                encoder_sample_rate_ = 16000;
-                encoder_duration_ms_ = OPUS_FRAME_DURATION_MS;
-                g_opus_released_for_radio = false;
-                encoder_ok = true;
-                ESP_LOGI(TAG, "Opus encoder restored after radio");
+            std::lock_guard<std::mutex> decoder_lock(decoder_mutex_);
+            if (opus_decoder_ != nullptr) {
+                return true;
             }
         }
-        if (!encoder_ok) {
-            ESP_LOGW(TAG, "Opus restore attempt %d failed (free heap %u, largest block %u)",
-                     attempt + 1,
+        SetDecodeSampleRate(codec_->output_sample_rate(), OPUS_FRAME_DURATION_MS);
+        std::lock_guard<std::mutex> decoder_lock(decoder_mutex_);
+        if (opus_decoder_ != nullptr) {
+            ESP_LOGI(TAG, "Opus decoder restored after radio");
+            return true;
+        }
+        return false;
+    };
+
+    constexpr int kMaxRestoreAttempts = 6;
+    bool encoder_ok = false;
+    bool decoder_ok = false;
+    for (int attempt = 0; attempt < kMaxRestoreAttempts && !(encoder_ok && decoder_ok); attempt++) {
+        if (attempt % 2 == 0) {
+            encoder_ok = try_open_encoder();
+            decoder_ok = try_open_decoder();
+        } else {
+            decoder_ok = try_open_decoder();
+            encoder_ok = try_open_encoder();
+        }
+        if (!(encoder_ok && decoder_ok)) {
+            ESP_LOGW(TAG, "Opus restore attempt %d failed (enc=%d dec=%d, free heap %u, largest block %u)",
+                     attempt + 1, encoder_ok, decoder_ok,
                      static_cast<unsigned>(esp_get_free_heap_size()),
                      static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
-            vTaskDelay(pdMS_TO_TICKS(200));
+            // Lebih lama dari jeda minimum percobaan ulang decoder (500 ms).
+            vTaskDelay(pdMS_TO_TICKS(600));
         }
     }
-    if (!encoder_ok) {
-        ESP_LOGW(TAG, "Opus encoder not restored yet, will retry lazily (no restart)");
-    }
-
-    // Buka decoder Opus pada sample rate codec (sama seperti saat boot, tanpa resampler).
-    // Kalau encoder belum pulih, JANGAN buka decoder sekarang: biarkan encoder yang
-    // mendapat blok heap terbesar lebih dulu (decoder dibuka lazy oleh OpusCodecTask).
-    if (encoder_ok) {
-        SetDecodeSampleRate(codec_->output_sample_rate(), OPUS_FRAME_DURATION_MS);
+    if (!(encoder_ok && decoder_ok)) {
+#ifndef RADIO_RESTART_ON_CODEC_FAIL
+#define RADIO_RESTART_ON_CODEC_FAIL 1
+#endif
+#if RADIO_RESTART_ON_CODEC_FAIL
+        // Tanpa decoder perangkat bisu, tanpa encoder tidak bisa mendengar.
+        // Heap yang terfragmentasi hanya pulih lewat restart.
+        ESP_LOGE(TAG, "Opus codecs cannot be restored (enc=%d dec=%d); restarting", encoder_ok, decoder_ok);
+        vTaskDelay(pdMS_TO_TICKS(300));
+        esp_restart();
+#else
+        ESP_LOGW(TAG, "Opus codecs not fully restored (enc=%d dec=%d)", encoder_ok, decoder_ok);
+#endif
     }
 
     if (restore_wake_word && !service_stopped_.load()) {
