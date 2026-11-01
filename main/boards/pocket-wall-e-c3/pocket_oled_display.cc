@@ -205,7 +205,7 @@ void PocketOledDisplay::BuildRadioUI(lv_obj_t* screen) {
 
     // Frekuensi besar.
     radio_freq_ = lv_label_create(radio_layer_);
-    lv_obj_set_pos(radio_freq_, 44, 22);
+    lv_obj_set_pos(radio_freq_, 44, 27);
     lv_obj_set_width(radio_freq_, 60);
     lv_obj_set_style_text_color(radio_freq_, lv_color_white(), 0);
     lv_obj_set_style_text_align(radio_freq_, LV_TEXT_ALIGN_LEFT, 0);
