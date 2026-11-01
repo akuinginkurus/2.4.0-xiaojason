@@ -513,9 +513,14 @@ void AudioService::OpusCodecTask() {
 
             std::unique_lock<std::mutex> encoder_lock(g_encoder_mutex);
             // Kalau encoder dilepas untuk radio dan radio sudah berhenti tetapi
-            // pembukaan ulang sebelumnya gagal, coba lagi di sini.
+            // pembukaan ulang sebelumnya gagal, coba lagi di sini. Dibatasi
+            // 1x per 500 ms supaya tidak mencoba (dan mencetak error) tiap frame.
+            static int64_t last_encoder_retry_us = 0;
+            const int64_t now_us = esp_timer_get_time();
             if (opus_encoder_ == nullptr && g_opus_released_for_radio &&
-                !radio_playback_active_.load()) {
+                !radio_playback_active_.load() &&
+                now_us - last_encoder_retry_us >= 500000) {
+                last_encoder_retry_us = now_us;
                 if (OpenOpusEncoder(&opus_encoder_, &encoder_frame_size_, &encoder_outbuf_size_)) {
                     g_opus_released_for_radio = false;
                 }
@@ -754,10 +759,11 @@ void AudioService::StopRadioPlayback(bool restore_wake_word) {
         audio_queue_cv_.notify_all();
     }
 
-    // Buka kembali encoder Opus. Coba lebih lama (±5 detik); restart hanya
-    // sebagai pilihan terakhir supaya mic tidak mati.
+    // Buka kembali encoder Opus. Coba beberapa kali saja. Kalau tetap gagal,
+    // JANGAN restart: wake word tidak butuh encoder, dan OpusCodecTask akan
+    // mencoba lagi (1x per 500 ms) begitu ada audio yang perlu di-encode.
     bool encoder_ok = false;
-    for (int attempt = 0; attempt < 12 && !encoder_ok; attempt++) {
+    for (int attempt = 0; attempt < 3 && !encoder_ok; attempt++) {
         {
             std::lock_guard<std::mutex> encoder_lock(g_encoder_mutex);
             if (!g_opus_released_for_radio || opus_encoder_ != nullptr) {
@@ -775,13 +781,11 @@ void AudioService::StopRadioPlayback(bool restore_wake_word) {
                      attempt + 1,
                      static_cast<unsigned>(esp_get_free_heap_size()),
                      static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
-            vTaskDelay(pdMS_TO_TICKS(400));
+            vTaskDelay(pdMS_TO_TICKS(200));
         }
     }
     if (!encoder_ok) {
-        ESP_LOGE(TAG, "Opus encoder cannot be restored, restarting");
-        vTaskDelay(pdMS_TO_TICKS(500));
-        esp_restart();
+        ESP_LOGW(TAG, "Opus encoder not restored yet, will retry lazily (no restart)");
     }
 
     // Buka decoder Opus sekarang, selagi heap masih utuh (sebelum MQTT/TLS membukanya lagi).
