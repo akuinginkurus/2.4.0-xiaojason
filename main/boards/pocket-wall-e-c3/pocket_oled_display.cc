@@ -245,7 +245,7 @@ void PocketOledDisplay::BuildRadioUI(lv_obj_t* screen) {
 
     // Satuan MHz (statis).
     auto* radio_unit_ = lv_label_create(radio_layer_);
-    lv_obj_set_pos(radio_unit_, 105, 27);
+    lv_obj_set_pos(radio_unit_, 75, 27);
     lv_obj_set_style_text_color(radio_unit_, lv_color_white(), 0);
     lv_label_set_text_static(radio_unit_, "MHz");
 
