@@ -258,7 +258,7 @@ void Application::Run() {
         }
 
         if (bits & MAIN_EVENT_CLOCK_TICK) {
-                        clock_ticks_++;
+            clock_ticks_++;
             auto display = Board::GetInstance().GetDisplay();
 
             static int radio_active_ticks = 0;
@@ -279,6 +279,8 @@ void Application::Run() {
                         audio_service_.EnableWakeWordDetection(true);
                     } else if ((st == kDeviceStateListening || st == kDeviceStateSpeaking) &&
                                protocol_) {
+                        // Cadangan: sesi masih terbuka. Tutup -> state kembali ke Idle
+                        // -> cabang Idle di HandleStateChangedEvent mengaktifkan wake word.
                         protocol_->CloseAudioChannel();
                     }
                 }
@@ -944,38 +946,40 @@ void Application::HandleStateChangedEvent() {
 
     switch (new_state) {
         case kDeviceStateUnknown:
-case kDeviceStateIdle:
-    if (audio_service_.IsRadioPlaybackActive()) {
-        display->SetStatus("RADIO");
-        display->ClearChatMessages();
-        display->SetEmotion("happy");
-        board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
-
-        audio_service_.EnableVoiceProcessing(false);
-        audio_service_.EnableWakeWordDetection(false);
-    } else {
-                    if (audio_service_.IsRadioPlaybackActive()) {
-                // Radio sedang diputar: jangan nyalakan mic, tutup sesi suara.
+        case kDeviceStateIdle:
+            if (audio_service_.IsRadioPlaybackActive()) {
+                // Radio diputar: layar radio, mic dan wake word mati.
                 display->SetStatus("RADIO");
-                if (protocol_) {
-                    protocol_->CloseAudioChannel();
-                }
-                break;
-                    }
-        display->SetStatus(Lang::Strings::STANDBY);
-        display->ClearChatMessages();
-        display->SetEmotion("neutral");
+                display->ClearChatMessages();
+                display->SetEmotion("happy");
+                board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
 
-        audio_service_.EnableVoiceProcessing(false);
-        audio_service_.EnableWakeWordDetection(true);
-    }
-    break;
+                audio_service_.EnableVoiceProcessing(false);
+                audio_service_.EnableWakeWordDetection(false);
+            } else {
+                display->SetStatus(Lang::Strings::STANDBY);
+                display->ClearChatMessages();
+                display->SetEmotion("neutral");
+
+                audio_service_.EnableVoiceProcessing(false);
+                audio_service_.EnableWakeWordDetection(true);
+            }
+            break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
             display->SetEmotion("neutral");
             display->SetChatMessage("system", "");
             break;
         case kDeviceStateListening:
+            // BARU: selama radio, jangan pernah menyalakan mic/voice processing.
+            // Tutup sesi chat -> OnAudioChannelClosed -> state kembali ke Idle
+            // (cabang radio di atas).
+            if (audio_service_.IsRadioPlaybackActive()) {
+                if (protocol_) {
+                    protocol_->CloseAudioChannel();
+                }
+                break;
+            }
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("neutral");
 
@@ -995,6 +999,11 @@ case kDeviceStateIdle:
             }
             break;
         case kDeviceStateSpeaking:
+            // BARU: jangan sentuh layar/decoder (ResetDecoder mengosongkan
+            // antrean PCM radio) saat radio sedang diputar.
+            if (audio_service_.IsRadioPlaybackActive()) {
+                break;
+            }
             display->SetStatus(Lang::Strings::SPEAKING);
 
             if (listening_mode_ != kListeningModeRealtime) {
@@ -1164,9 +1173,9 @@ void Application::WakeWordInvoke(const std::string& wake_word) {
 }
 
 bool Application::CanEnterSleepMode() {
-        if (audio_service_.IsRadioPlaybackActive()) {
+    if (audio_service_.IsRadioPlaybackActive()) {
         return false;
-        }
+    }
     if (GetDeviceState() != kDeviceStateIdle) {
         return false;
     }
