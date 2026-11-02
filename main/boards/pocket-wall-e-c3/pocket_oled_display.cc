@@ -228,7 +228,7 @@ void PocketOledDisplay::BuildRadioUI(lv_obj_t* screen) {
 
     // Frekuensi besar.
     radio_freq_ = lv_label_create(radio_layer_);
-    lv_obj_set_pos(radio_freq_, 44, 27);
+    lv_obj_set_pos(radio_freq_, 44, 29);
     lv_obj_set_width(radio_freq_, 60);
     lv_obj_set_style_text_color(radio_freq_, lv_color_white(), 0);
     lv_obj_set_style_text_align(radio_freq_, LV_TEXT_ALIGN_LEFT, 0);
@@ -239,7 +239,7 @@ void PocketOledDisplay::BuildRadioUI(lv_obj_t* screen) {
     lv_label_set_text_static(radio_freq_, radio_freq_buf_);
 
     radio_fm_ = lv_label_create(radio_layer_);
-    lv_obj_set_pos(radio_fm_, 106, 40);
+    lv_obj_set_pos(radio_fm_, 106, 29);
     lv_obj_set_style_text_color(radio_fm_, lv_color_white(), 0);
     lv_label_set_text_static(radio_fm_, "FM");
 
