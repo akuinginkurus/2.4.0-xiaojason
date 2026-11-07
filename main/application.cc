@@ -1556,11 +1556,62 @@ bool Application::TryHandleSongConfirmation(const std::string& text) {
     return false;
 }
 
+
 void Application::HandleUserTextForSong(const std::string& message) {
     if (TryHandleSongConfirmation(message)) {
         return;
     }
 
+    // Battery status is read only when explicitly requested by voice.
+    const std::string normalized = NormalizeCommandText(message);
+
+    static const char* battery_commands[] = {
+        "status battery",
+        "status baterai",
+        "battery status",
+        "tampilkan status baterai",
+        "tampilkan status battery",
+        "tampilkan baterai",
+        "cek status baterai",
+        "cek baterai",
+        "periksa baterai",
+        "berapa persen baterai"
+    };
+
+    for (const char* command : battery_commands) {
+        if (ContainsNormalizedPhrase(normalized, command)) {
+            int battery_level = 0;
+            bool charging = false;
+            bool discharging = false;
+
+            auto& board = Board::GetInstance();
+            auto* display = board.GetDisplay();
+
+            if (display == nullptr) {
+                ESP_LOGW(TAG, "Battery request ignored: no display");
+                return;
+            }
+
+            if (board.GetBatteryLevel(
+                    battery_level,
+                    charging,
+                    discharging)) {
+                ESP_LOGI(
+                    TAG,
+                    "Battery status requested: %d%%",
+                    battery_level);
+
+                display->ShowBatteryStatus(battery_level);
+            } else {
+                ESP_LOGW(TAG, "Battery ADC reading unavailable");
+                display->ShowBatteryStatus(-1);
+            }
+
+            return;
+        }
+    }
+
+    // Existing YouTube song command handling.
     static const std::vector<std::string> play_prefixes = {
         "tolong putarkan lagu ", "tolong putar lagu ",
         "tolong putarkan musik ", "tolong putar musik ",
@@ -1571,16 +1622,26 @@ void Application::HandleUserTextForSong(const std::string& message) {
         "play song ", "play music ", "play "};
 
     std::string lower_msg = ToLowerAscii(message);
+
     for (const auto& p : play_prefixes) {
         auto pos = lower_msg.find(p);
+
         if (pos != std::string::npos && pos <= 15) {
-            std::string q = CleanSongQuery(message.substr(pos + p.length()));
+            std::string q =
+                CleanSongQuery(message.substr(pos + p.length()));
+
             if (!q.empty()) {
                 youtube_song_requested_ = true;
                 youtube_song_query_ = q;
-                ESP_LOGI(TAG, "Extracted YouTube song query: \"%s\"", q.c_str());
+
+                ESP_LOGI(
+                    TAG,
+                    "Extracted YouTube song query: \"%s\"",
+                    q.c_str());
+
                 break;
             }
         }
     }
 }
+
