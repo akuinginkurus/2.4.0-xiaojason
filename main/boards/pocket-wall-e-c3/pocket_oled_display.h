@@ -1,3 +1,4 @@
+
 #ifndef POCKET_OLED_DISPLAY_H
 #define POCKET_OLED_DISPLAY_H
 
@@ -20,6 +21,7 @@ public:
     void SetEmotion(const char* emotion) override;
     void SetChatMessage(const char* role, const char* content) override;
     void ClearChatMessages() override;
+    void ShowBatteryStatus(int percentage) override;
 
 private:
     enum class FaceMode {
@@ -43,6 +45,16 @@ private:
     lv_obj_t* left_bottom_lid_ = nullptr;
     lv_obj_t* right_bottom_lid_ = nullptr;
     lv_obj_t* chat_line_ = nullptr;
+
+    // Battery screen: hidden until the user requests battery status.
+    lv_obj_t* battery_overlay_ = nullptr;
+    lv_obj_t* battery_icon_body_ = nullptr;
+    lv_obj_t* battery_icon_tip_ = nullptr;
+    lv_obj_t* battery_icon_fill_ = nullptr;
+    lv_obj_t* battery_text_ = nullptr;
+    lv_obj_t* battery_warning_ = nullptr;
+    bool battery_overlay_active_ = false;
+    uint32_t battery_overlay_until_tick_ = 0;
 
     // Equalizer bars inside the face area only.
     lv_obj_t* music_bars_[kMusicBarCount] = {};
@@ -68,8 +80,6 @@ private:
 
     bool has_chat_text_ = false;
     bool music_mode_ = false;
-
-    // Keeps sleepy eyes active while the device is in standby.
     bool standby_mode_ = false;
 
     static void AnimationTimerCallback(lv_timer_t* timer);
