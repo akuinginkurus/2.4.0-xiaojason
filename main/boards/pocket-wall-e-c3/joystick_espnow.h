@@ -1,5 +1,4 @@
 
-
 #ifndef POCKET_WALL_E_C3_JOYSTICK_ESPNOW_H
 #define POCKET_WALL_E_C3_JOYSTICK_ESPNOW_H
 
@@ -37,6 +36,7 @@ private:
     };
 
     MotorController* motor_;
+
     volatile uint32_t lastControlMs_ = 0;
     volatile bool running_ = false;
 
@@ -46,6 +46,7 @@ private:
         const esp_now_recv_info_t* info,
         const uint8_t* data,
         int length) {
+
         if (instance_ != nullptr) {
             instance_->OnReceive(info, data, length);
         }
@@ -63,6 +64,7 @@ private:
         }
 
         esp_now_peer_info_t peer = {};
+
         memcpy(peer.peer_addr, mac, 6);
         peer.channel = 0;
         peer.ifidx = WIFI_IF_STA;
@@ -71,8 +73,11 @@ private:
         esp_err_t err = esp_now_add_peer(&peer);
 
         if (err != ESP_OK && err != ESP_ERR_ESPNOW_EXIST) {
-            ESP_LOGW(TAG, "Gagal menambahkan peer: %s",
-                     esp_err_to_name(err));
+            ESP_LOGW(
+                TAG,
+                "Gagal menambahkan peer: %s",
+                esp_err_to_name(err));
+
             return false;
         }
 
@@ -81,18 +86,21 @@ private:
 
     void SendAck(const uint8_t* mac) {
         JoystickPacket ack = {};
+
         ack.magic = PACKET_MAGIC;
         ack.type = TYPE_ACK;
 
-        esp_now_send(mac,
-                     reinterpret_cast<const uint8_t*>(&ack),
-                     sizeof(ack));
+        esp_now_send(
+            mac,
+            reinterpret_cast<const uint8_t*>(&ack),
+            sizeof(ack));
     }
 
     void OnReceive(
         const esp_now_recv_info_t* info,
         const uint8_t* data,
         int length) {
+
         if (info == nullptr ||
             data == nullptr ||
             length != sizeof(JoystickPacket)) {
@@ -110,6 +118,7 @@ private:
             if (AddPeer(info->src_addr)) {
                 SendAck(info->src_addr);
             }
+
             return;
         }
 
@@ -118,21 +127,34 @@ private:
             return;
         }
 
-        // ACK setiap paket kontrol agar remote mengetahui
-        // bahwa kanal komunikasi masih aktif.
         SendAck(info->src_addr);
 
         lastControlMs_ =
-            static_cast<uint32_t>(esp_timer_get_time() / 1000);
+            static_cast<uint32_t>(
+                esp_timer_get_time() / 1000);
 
-        if (packet.button ||
-            (packet.left == 0 && packet.right == 0)) {
+        // Tombol remote tetap menjadi emergency stop.
+        if (packet.button) {
+            ESP_LOGW(
+                TAG,
+                "Emergency stop from joystick");
+
+            motor_->Stop();
+            lastControlMs_ = 0;
+            return;
+        }
+
+        // Selama mode otomatis, abaikan semua perintah gerakan
+        // dan perintah netral dari joystick.
+        if (motor_->IsAutonomousMode()) {
+            return;
+        }
+
+        if (packet.left == 0 && packet.right == 0) {
             motor_->Stop();
             return;
         }
 
-        // MotorController yang ada membatasi durasi perintah.
-        // Paket berikutnya memperbarui perintah gerak.
         motor_->Drive(
             static_cast<int>(packet.left),
             static_cast<int>(packet.right),
@@ -140,8 +162,6 @@ private:
     }
 
     void TaskLoop() {
-        // Jangan menginisialisasi ulang Wi-Fi.
-        // WifiBoard milik XiaoZhi yang mengelolanya.
         wifi_mode_t mode = WIFI_MODE_NULL;
 
         while (esp_wifi_get_mode(&mode) != ESP_OK ||
@@ -150,9 +170,15 @@ private:
         }
 
         esp_err_t err = esp_now_init();
-        if (err != ESP_OK && err != ESP_ERR_ESPNOW_EXIST) {
-            ESP_LOGE(TAG, "esp_now_init gagal: %s",
-                     esp_err_to_name(err));
+
+        if (err != ESP_OK &&
+            err != ESP_ERR_ESPNOW_EXIST) {
+
+            ESP_LOGE(
+                TAG,
+                "esp_now_init gagal: %s",
+                esp_err_to_name(err));
+
             motor_->Stop();
             vTaskDelete(nullptr);
             return;
@@ -161,27 +187,41 @@ private:
         instance_ = this;
 
         err = esp_now_register_recv_cb(ReceiveCallback);
+
         if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Gagal mendaftarkan callback");
+            ESP_LOGE(
+                TAG,
+                "Gagal mendaftarkan callback");
+
             motor_->Stop();
             vTaskDelete(nullptr);
             return;
         }
 
         running_ = true;
+
         ESP_LOGI(TAG, "Penerima joystick siap");
 
         while (true) {
             uint32_t now =
-                static_cast<uint32_t>(esp_timer_get_time() / 1000);
+                static_cast<uint32_t>(
+                    esp_timer_get_time() / 1000);
 
             uint32_t last = lastControlMs_;
 
-            if (last != 0 &&
-                static_cast<uint32_t>(now - last) > FAILSAFE_MS) {
+            // Failsafe joystick tidak boleh menghentikan
+            // mode otomatis hanya karena remote sedang diam.
+            if (!motor_->IsAutonomousMode() &&
+                last != 0 &&
+                static_cast<uint32_t>(now - last) >
+                    FAILSAFE_MS) {
+
                 motor_->Stop();
                 lastControlMs_ = 0;
-                ESP_LOGW(TAG, "Joystick terputus: motor dihentikan");
+
+                ESP_LOGW(
+                    TAG,
+                    "Joystick terputus: motor dihentikan");
             }
 
             vTaskDelay(pdMS_TO_TICKS(50));
@@ -191,6 +231,7 @@ private:
 public:
     explicit JoystickEspNow(MotorController* motor)
         : motor_(motor) {
+
         instance_ = this;
 
         xTaskCreate(
@@ -205,6 +246,7 @@ public:
     ~JoystickEspNow() {
         motor_->Stop();
         running_ = false;
+
         if (instance_ == this) {
             instance_ = nullptr;
         }
