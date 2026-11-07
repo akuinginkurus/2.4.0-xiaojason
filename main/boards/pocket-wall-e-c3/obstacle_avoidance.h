@@ -25,8 +25,7 @@ private:
     static constexpr gpio_num_t ECHO_PIN = ULTRASONIC_ECHO_PIN;
 
     static constexpr uint32_t AUTO_DURATION_MS = 60000;
-    static constexpr uint32_t OBSTACLE_DISTANCE_CM =
-    ULTRASONIC_OBSTACLE_DISTANCE_CM;
+    static constexpr uint32_t OBSTACLE_DISTANCE_CM = ULTRASONIC_OBSTACLE_DISTANCE_CM;
 
     static constexpr uint32_t REVERSE_TIME_MS = 450;
     static constexpr uint32_t TURN_TIME_MS = 550;
