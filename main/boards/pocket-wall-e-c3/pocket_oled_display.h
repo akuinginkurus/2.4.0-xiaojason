@@ -56,6 +56,10 @@ private:
     bool battery_overlay_active_ = false;
     uint32_t battery_overlay_until_tick_ = 0;
 
+    lv_timer_t* battery_hide_timer_ = nullptr;
+
+    static void BatteryHideTimerCallback(lv_timer_t* timer);
+
     // Equalizer bars inside the face area only.
     lv_obj_t* music_bars_[kMusicBarCount] = {};
     int music_heights_[kMusicBarCount] = {};
