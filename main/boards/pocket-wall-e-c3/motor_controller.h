@@ -1,5 +1,5 @@
-#ifndef _MOCHAN_V2_MOTOR_CONTROLLER_H_
-#define _MOCHAN_V2_MOTOR_CONTROLLER_H_
+#ifndef _MOTOR_CONTROLLER_H_
+#define _MOTOR_CONTROLLER_H_
 
 #include <atomic>
 #include <cstdint>
