@@ -1,3 +1,4 @@
+
 #ifndef DISPLAY_H
 #define DISPLAY_H
 
@@ -40,6 +41,10 @@ public:
     virtual void SetEmotion(const char* emotion);
     virtual void SetChatMessage(const char* role, const char* content);
     virtual void ClearChatMessages();
+
+    // Optional board-specific battery display.
+    virtual void ShowBatteryStatus(int percentage) {}
+
     virtual void SetTheme(Theme* theme);
     virtual Theme* GetTheme() { return current_theme_; }
     virtual void UpdateStatusBar(bool update_all = false);
@@ -56,7 +61,7 @@ public:
 protected:
     int width_ = 0;
     int height_ = 0;
-    bool setup_ui_called_ = false;  // Track if SetupUI() has been called
+    bool setup_ui_called_ = false;
 
     Theme* current_theme_ = nullptr;
 
