@@ -10,7 +10,7 @@
 #include "config.h"
 #include "mcp_server.h"
 
-#define TAG "MochanMotor"
+#define TAG "PocketMotor"
 
 namespace {
 constexpr ledc_mode_t kSpeedMode = LEDC_LOW_SPEED_MODE;
