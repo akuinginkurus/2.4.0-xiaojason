@@ -21,7 +21,12 @@
 
 #define BUILTIN_LED_GPIO GPIO_NUM_8
 
+// Wakeword dimatikan: tombol menggantikannya (tekan, bicara, Xiaozhi menjawab).
+// Tombol BOOT bawaan board C3 (GPIO9, aktif LOW) selalu berfungsi sebagai tombol.
 #define ACTION_BUTTON_GPIO GPIO_NUM_9
+// Tombol eksternal opsional, memakai handler yang sama dengan tombol BOOT.
+// Isi dengan GPIO yang bebas bila dipasang terpisah; GPIO_NUM_NC = tidak dipakai.
+#define EXTERNAL_BUTTON_GPIO GPIO_NUM_NC
 
 // MX1508 dual H-bridge.
 #define MOTOR_LEFT_IN1_PIN GPIO_NUM_5
