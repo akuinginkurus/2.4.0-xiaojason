@@ -22,6 +22,9 @@
 
 #define TAG "PocketWallEC3"
 
+static_assert(EXTERNAL_BUTTON_GPIO == GPIO_NUM_NC || EXTERNAL_BUTTON_GPIO != ACTION_BUTTON_GPIO,
+              "EXTERNAL_BUTTON_GPIO must differ from ACTION_BUTTON_GPIO");
+
 namespace {
 
 // The C3 has one I2S controller, so the INMP441 and MAX98357A share BCLK/WS.
@@ -126,6 +129,7 @@ private:
     esp_lcd_panel_handle_t panel_ = nullptr;
     Display* display_ = nullptr;
     Button action_button_;
+    Button external_button_;
     MotorController* motor_controller_ = nullptr;
     JoystickEspNow* joystick_espnow_ = nullptr;
 
@@ -180,9 +184,9 @@ private:
                                          DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
     }
 
-    
-void InitializeButton() {
-    action_button_.OnClick([this]() {
+    // Tombol menggantikan wakeword. Dari standby, satu kali tekan langsung
+    // masuk mode listening; setelah selesai bicara, Xiaozhi menjawab otomatis.
+    void HandleButtonClick() {
         auto& app = Application::GetInstance();
         auto& player = YouTubeAudioPoller::GetInstance();
 
@@ -194,23 +198,27 @@ void InitializeButton() {
             return;
         }
 
-        // Perilaku tombol normal tetap dipertahankan.
         if (app.GetDeviceState() == kDeviceStateStarting) {
             EnterWifiConfigMode();
             return;
         }
 
         app.ToggleChatState();
-    });
+    }
 
-    action_button_.OnLongPress([this]() {
-        EnterWifiConfigMode();
-    });
-}
+    void InitializeButton() {
+        // Tombol BOOT dan tombol eksternal (jika ada) memakai handler yang sama,
+        // jadi tombol BOOT bisa dipakai saat tombol eksternal tidak terjangkau.
+        for (Button* button : {&action_button_, &external_button_}) {
+            button->OnClick([this]() { HandleButtonClick(); });
+            button->OnLongPress([this]() { EnterWifiConfigMode(); });
+        }
+    }
 
 
 public:
-    PocketWallEC3Board() : action_button_(ACTION_BUTTON_GPIO) {
+    PocketWallEC3Board()
+        : action_button_(ACTION_BUTTON_GPIO), external_button_(EXTERNAL_BUTTON_GPIO) {
         InitializeDisplayI2c();
         InitializeDisplay();
         InitializeButton();
