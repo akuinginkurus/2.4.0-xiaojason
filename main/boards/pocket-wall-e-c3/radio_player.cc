@@ -387,6 +387,10 @@ void RestoreAfterRadio() {
     // Kembalikan layar ke wajah Wall-E.
     Board::GetInstance().GetDisplay()->SetStatus("RADIO_END");
 
+    // Timpa sisa teks chat lama ("% self.radio.play...") dengan pesan yang jelas.
+    // Dipanggil setelah codec dipulihkan, jadi alokasi teks LVGL aman di sini.
+    Board::GetInstance().GetDisplay()->SetChatMessage("system", "Radio dihentikan");
+
     if (app.GetDeviceState() == kDeviceStateIdle) {
         // Pastikan voice processing tidak tertinggal aktif.
         audio.EnableVoiceProcessing(false);
