@@ -45,6 +45,16 @@ public:
     // setelah idle. Kalau mic dinyalakan sendirian (tekan tombol setelah radio
     // atau standby lama), tidak ada clock dan mic diam. Jadi TX selalu
     // dinyalakan lebih dulu; TX hanya mengirim keheningan sampai ada suara.
+    // Speaker (MAX98357A) mengeluarkan bunyi "cetak" setiap clock I2S dinyalakan
+    // lagi setelah dimatikan. Setelah pertama kali menyala, TX dibiarkan hidup
+    // (hanya mengirim keheningan) sehingga tidak ada bunyi saat tombol ditekan.
+    void EnableOutput(bool enable) override {
+        if (!enable && output_enabled()) {
+            return;
+        }
+        NoAudioCodecDuplex::EnableOutput(enable);
+    }
+
     void EnableInput(bool enable) override {
         if (enable && !output_enabled()) {
             NoAudioCodecDuplex::EnableOutput(true);
@@ -157,10 +167,12 @@ void InitializeRadioTools() {
         "self.radio.play",
         "Play Indonesian online radio when the user says "
         "'Putar Radio' or 'Setel Radio'. "
-        "Start the radio stream on the device.",
-        PropertyList(),
-        [this](const PropertyList&) -> ReturnValue {
-            return radio_player_.StartRadio();
+        "The optional station number selects the channel: "
+        "1 = I-Radio Jakarta, 2 = Hard Rock FM, 3 = Radio Dangdut, 4 = Elshinta FM. "
+        "For 'putar radio 2' use station 2. If the user gives no number, use 1.",
+        PropertyList({Property("station", kPropertyTypeInteger, 1, 1, 4)}),
+        [this](const PropertyList& properties) -> ReturnValue {
+            return radio_player_.StartRadio(properties["station"].value<int>());
         }
     );
 
