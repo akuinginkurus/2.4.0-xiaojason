@@ -243,6 +243,12 @@ void PocketOledDisplay::BuildRadioUI(lv_obj_t* screen) {
     lv_obj_set_style_text_color(radio_fm_, lv_color_white(), 0);
     lv_label_set_text_static(radio_fm_, "FM");
 
+    // Satuan MHz (statis).
+    auto* radio_unit_ = lv_label_create(radio_layer_);
+    lv_obj_set_pos(radio_unit_, 75, 27);
+    lv_obj_set_style_text_color(radio_unit_, lv_color_white(), 0);
+    lv_label_set_text_static(radio_unit_, "MHz");
+
     // Skala dial: garis dasar dengan tanda panjang/pendek.
     static lv_point_precise_t dial_points[kRadioDialTicks * 3 + 1];
     int n = 0;
@@ -345,7 +351,8 @@ void PocketOledDisplay::SetStatus(const char* status) {
         OledDisplay::SetStatus(Lang::Strings::STANDBY);
         DisplayLockGuard lock(this);
         HideRadio();
-        SetFaceMode(FaceMode::kNeutral);
+        standby_ = true;
+        SetFaceMode(FaceMode::kSleepy);
         if (!has_chat_text_ && chat_line_ != nullptr) {
             lv_label_set_text(chat_line_, Lang::Strings::STANDBY);
         }
@@ -366,6 +373,7 @@ void PocketOledDisplay::SetStatus(const char* status) {
     if (status == nullptr) {
         return;
     }
+    standby_ = std::strcmp(status, Lang::Strings::STANDBY) == 0;
     if (std::strcmp(status, Lang::Strings::LISTENING) == 0) {
         SetFaceMode(FaceMode::kListening);
     } else if (std::strcmp(status, Lang::Strings::SPEAKING) == 0) {
@@ -373,8 +381,8 @@ void PocketOledDisplay::SetStatus(const char* status) {
     } else if (std::strcmp(status, Lang::Strings::CONNECTING) == 0 || Contains(status, "Đang") ||
                Contains(status, "đang")) {
         SetFaceMode(FaceMode::kThinking);
-    } else if (std::strcmp(status, Lang::Strings::STANDBY) == 0) {
-        SetFaceMode(FaceMode::kNeutral);
+    } else if (standby_) {
+        SetFaceMode(FaceMode::kSleepy);  // idle: mengantuk
     }
     if (!has_chat_text_ && chat_line_ != nullptr) {
         lv_label_set_text(chat_line_, status);
@@ -387,7 +395,13 @@ void PocketOledDisplay::SetEmotion(const char* emotion) {
     }
     OledDisplay::SetEmotion(emotion);
     DisplayLockGuard lock(this);
-    SetFaceMode(FaceModeFromEmotion(emotion));
+    FaceMode mode = FaceModeFromEmotion(emotion);
+    // Application memanggil SetEmotion("neutral") tepat setelah status standby;
+    // saat idle tetap tampilkan wajah mengantuk.
+    if (standby_ && mode == FaceMode::kNeutral) {
+        mode = FaceMode::kSleepy;
+    }
+    SetFaceMode(mode);
 }
 
 void PocketOledDisplay::SetChatMessage(const char* role, const char* content) {
