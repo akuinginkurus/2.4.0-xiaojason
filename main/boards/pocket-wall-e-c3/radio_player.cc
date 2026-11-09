@@ -513,7 +513,7 @@ RadioPlayer::~RadioPlayer() {
     RequestStop();
 }
 
-bool RadioPlayer::StartRadio() {
+bool RadioPlayer::StartRadio(int station) {
     if (active_.load()) {
         if (startup_state_.load() == 1) {
             ESP_LOGI(TAG, "Radio is already playing");
@@ -528,6 +528,12 @@ bool RadioPlayer::StartRadio() {
     }
 
     auto& audio = Application::GetInstance().GetAudioService();
+
+    int start_index = station - 1;
+    if (start_index < 0 || start_index >= static_cast<int>(kStationCount)) {
+        start_index = 0;
+    }
+    requested_station_.store(start_index);
 
     // Tampilan radio dikirim lebih dulu (teks layar statis, tanpa alokasi heap),
     // dan task pemulihan dibuat sebelum codec dilepas supaya tidak memecah heap.
@@ -643,7 +649,8 @@ void RadioPlayer::TaskLoop() {
 
     bool decoder_registered = false;
     bool simple_decoder_registered = false;
-    size_t current_station = 0;
+    const size_t first_station = static_cast<size_t>(requested_station_.load());
+    size_t current_station = first_station;
 
     StreamReader reader;
     uint8_t* input_buffer = static_cast<uint8_t*>(malloc(kHttpReadSize));
@@ -656,7 +663,9 @@ void RadioPlayer::TaskLoop() {
         }
 
         // Coba stasiun satu per satu sampai ada yang tersambung.
-        for (size_t i = 0; i < kStationCount; i++) {
+        // Mulai dari stasiun pilihan; stasiun lain hanya cadangan kalau gagal.
+        for (size_t n = 0; n < kStationCount; n++) {
+            const size_t i = (first_station + n) % kStationCount;
             if (stop_requested_.load()) {
                 break;
             }
