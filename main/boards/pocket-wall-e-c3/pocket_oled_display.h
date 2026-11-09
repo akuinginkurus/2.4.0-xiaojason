@@ -64,6 +64,8 @@ private:
     lv_obj_t* radio_bars_[kRadioBarCount] = {};
     int radio_bar_height_[kRadioBarCount] = {};
     bool radio_active_ = false;
+    // True saat status "standby" (idle): wajah netral diganti ekspresi mengantuk.
+    bool standby_ = false;
     // Teks label radio memakai buffer statis supaya tidak ada alokasi heap saat radio jalan.
     char radio_name_buf_[40] = {0};
     char radio_freq_buf_[12] = {0};
