@@ -11,7 +11,8 @@ public:
     RadioPlayer();
     ~RadioPlayer();
 
-    bool StartRadio();
+    // station: nomor 1..N (urutan kStations); 0 = stasiun pertama.
+    bool StartRadio(int station = 0);
     void RequestStop();
 
     bool IsPlaying() const {
@@ -24,6 +25,7 @@ private:
 
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool> active_{false};
+    std::atomic<int> requested_station_{0};  // indeks 0-based stasiun awal
 
     // 0 = menunggu audio pertama
     // 1 = PCM berhasil dikirim
