@@ -13,6 +13,7 @@
 #include <esp_lcd_panel_sh1106.h>
 #endif
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <cstdint>
 #include <climits>
 #include "motor_controller.h"
@@ -38,12 +39,32 @@ public:
                      gpio_num_t dout, gpio_num_t din)
         : NoAudioCodecDuplex(sample_rate, sample_rate, bclk, ws, dout, din) {}
 
+    // Mic dan speaker memakai satu controller I2S dengan BCLK/WS bersama, jadi
+    // mic hanya mendapat clock selama kanal TX (speaker) juga aktif. Tanpa
+    // wakeword, mic ikut mati saat standby dan AudioService juga mematikan TX
+    // setelah idle. Kalau mic dinyalakan sendirian (tekan tombol setelah radio
+    // atau standby lama), tidak ada clock dan mic diam. Jadi TX selalu
+    // dinyalakan lebih dulu; TX hanya mengirim keheningan sampai ada suara.
+    void EnableInput(bool enable) override {
+        if (enable && !output_enabled()) {
+            NoAudioCodecDuplex::EnableOutput(true);
+        }
+        NoAudioCodecDuplex::EnableInput(enable);
+    }
+
 protected:
     int Read(int16_t* dest, int samples) override {
         std::vector<int32_t> raw(samples);
         size_t bytes_read = 0;
         if (i2s_channel_read(rx_handle_, raw.data(), raw.size() * sizeof(int32_t),
                              &bytes_read, 200) != ESP_OK) {
+            // Tanda mic tidak mendapat clock/data; dibatasi 1x per 2 detik.
+            static int64_t last_warn_us = 0;
+            const int64_t now_us = esp_timer_get_time();
+            if (now_us - last_warn_us >= 2000000) {
+                last_warn_us = now_us;
+                ESP_LOGW(TAG, "Mic read timeout (speaker TX enabled: %d)", output_enabled());
+            }
             return 0;
         }
 
