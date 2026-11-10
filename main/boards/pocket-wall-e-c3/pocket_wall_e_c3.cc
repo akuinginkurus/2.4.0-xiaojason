@@ -45,16 +45,6 @@ public:
     // setelah idle. Kalau mic dinyalakan sendirian (tekan tombol setelah radio
     // atau standby lama), tidak ada clock dan mic diam. Jadi TX selalu
     // dinyalakan lebih dulu; TX hanya mengirim keheningan sampai ada suara.
-    // Speaker (MAX98357A) mengeluarkan bunyi "cetak" setiap clock I2S dinyalakan
-    // lagi setelah dimatikan. Setelah pertama kali menyala, TX dibiarkan hidup
-    // (hanya mengirim keheningan) sehingga tidak ada bunyi saat tombol ditekan.
-    void EnableOutput(bool enable) override {
-        if (!enable && output_enabled()) {
-            return;
-        }
-        NoAudioCodecDuplex::EnableOutput(enable);
-    }
-
     void EnableInput(bool enable) override {
         if (enable && !output_enabled()) {
             NoAudioCodecDuplex::EnableOutput(true);
@@ -280,8 +270,6 @@ Led* GetLed() override {
     }
 
     Display* GetDisplay() override { return display_; }
-
-  
 };
 
 DECLARE_BOARD(PocketWallEC3Board);
