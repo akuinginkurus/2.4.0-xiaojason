@@ -72,6 +72,7 @@ private:
 
     FaceMode face_mode_ = FaceMode::kNeutral;
     uint32_t animation_tick_ = 0;
+    uint32_t standby_start_tick_ = 0;  // awal idle, untuk mengantuk bertahap
     uint32_t random_state_ = 0x57414C4C;
     uint32_t next_blink_tick_ = 45;
     uint32_t blink_until_tick_ = 0;
