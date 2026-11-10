@@ -150,7 +150,23 @@ private:
     RadioPlayer radio_player_;
 
     
-void InitializeRadioTools() {
+// Gerakan singkat "senang": putar kiri lalu kanan, selesai di arah semula.
+    // Menunggu motor selesai sebelum kembali.
+    void WiggleBeforeRadio() {
+        if (motor_controller_ == nullptr) {
+            return;
+        }
+        constexpr uint32_t kStepMs = 350;
+        constexpr uint32_t kSettleMs = 350;  // termasuk jeda ganti arah motor
+        motor_controller_->Drive(-100, 100, kStepMs);
+        vTaskDelay(pdMS_TO_TICKS(kStepMs + kSettleMs));
+        motor_controller_->Drive(100, -100, kStepMs);
+        vTaskDelay(pdMS_TO_TICKS(kStepMs + kSettleMs));
+        motor_controller_->Stop();
+        vTaskDelay(pdMS_TO_TICKS(200));  // beri catu daya waktu stabil sebelum audio radio
+    }
+
+    void InitializeRadioTools() {
     auto& mcp_server = McpServer::GetInstance();
 
     mcp_server.AddTool(
@@ -162,6 +178,11 @@ void InitializeRadioTools() {
         "For 'putar radio 2' use station 2. If the user gives no number, use 1.",
         PropertyList({Property("station", kPropertyTypeInteger, 1, 1, 4)}),
         [this](const PropertyList& properties) -> ReturnValue {
+            // Goyang sebentar dulu, baru radio dinyalakan supaya motor (lonjakan arus)
+            // tidak bentrok dengan audio. Dilewati kalau radio sudah jalan.
+            if (!radio_player_.IsPlaying()) {
+                WiggleBeforeRadio();
+            }
             return radio_player_.StartRadio(properties["station"].value<int>());
         }
     );
