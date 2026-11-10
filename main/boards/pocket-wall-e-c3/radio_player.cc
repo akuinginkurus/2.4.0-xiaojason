@@ -23,9 +23,6 @@
 #include <esp_crt_bundle.h>
 #include <esp_audio_simple_dec.h>
 #include <esp_audio_simple_dec_default.h>
-#include <freertos/FreeRTOS.h>
-#include <freertos/stream_buffer.h>
-#include <freertos/task.h>
 
 #include "application.h"
 #include "audio/audio_service.h"
@@ -64,90 +61,9 @@ constexpr int kStartupTimeoutMs = 30000;
 // Kalau tidak ada data masuk selama ini, anggap stream putus lalu sambung ulang.
 constexpr int64_t kStallTimeoutUs = 3000000;
 
-// Buffer MP3 (terkompresi, ~16 KB/detik) antara task pembaca jaringan dan decoder.
-// Menyerap jeda jaringan; jauh lebih hemat RAM daripada memperbesar antrean PCM.
-constexpr size_t kRingBytes = 16 * 1024;
-constexpr size_t kRingFallbackBytes = 8 * 1024;
-constexpr size_t kRingPrebufferBytes = 8 * 1024;
-constexpr int kRingPrebufferTimeoutMs = 5000;
-constexpr uint32_t kReaderStackSize = 4096;
-
 struct HttpResponseHeaders {
     std::string content_type;
 };
-
-struct StreamReader {
-    esp_http_client_handle_t client = nullptr;
-    StreamBufferHandle_t buffer = nullptr;
-    std::atomic<bool> run{false};
-    std::atomic<bool> done{true};
-    std::atomic<bool> lost{false};
-    std::atomic<uint32_t> max_read_ms{0};
-};
-
-// Membaca HTTP terus-menerus ke ring buffer, terlepas dari kecepatan decode/pemutaran.
-void StreamReaderTask(void* arg) {
-    auto* r = static_cast<StreamReader*>(arg);
-    uint8_t* buf = static_cast<uint8_t*>(malloc(kHttpReadSize));
-    if (buf == nullptr) {
-        r->lost.store(true);
-        r->done.store(true);
-        vTaskDelete(nullptr);
-        return;
-    }
-    int64_t last_data_us = esp_timer_get_time();
-    while (r->run.load()) {
-        const int64_t t0 = esp_timer_get_time();
-        const int read = esp_http_client_read(r->client, reinterpret_cast<char*>(buf), kHttpReadSize);
-        const uint32_t ms = static_cast<uint32_t>((esp_timer_get_time() - t0) / 1000);
-        if (ms > r->max_read_ms.load()) {
-            r->max_read_ms.store(ms);
-        }
-        if (read > 0) {
-            last_data_us = esp_timer_get_time();
-            size_t offset = 0;
-            while (offset < static_cast<size_t>(read) && r->run.load()) {
-                offset += xStreamBufferSend(r->buffer, buf + offset, read - offset,
-                                            pdMS_TO_TICKS(100));
-            }
-        } else if (read == 0 || read == -ESP_ERR_HTTP_EAGAIN) {
-            if (esp_timer_get_time() - last_data_us >= kStallTimeoutUs) {
-                r->lost.store(true);
-                break;
-            }
-            vTaskDelay(pdMS_TO_TICKS(20));
-        } else {
-            ESP_LOGE(TAG, "Radio stream read failed: %d", read);
-            r->lost.store(true);
-            break;
-        }
-    }
-    free(buf);
-    r->done.store(true);
-    vTaskDelete(nullptr);
-}
-
-bool StartReader(StreamReader& r, esp_http_client_handle_t client) {
-    xStreamBufferReset(r.buffer);
-    r.client = client;
-    r.lost.store(false);
-    r.max_read_ms.store(0);
-    r.run.store(true);
-    r.done.store(false);
-    if (xTaskCreate(StreamReaderTask, "radio_rd", kReaderStackSize, &r, 5, nullptr) != pdPASS) {
-        r.run.store(false);
-        r.done.store(true);
-        return false;
-    }
-    return true;
-}
-
-void StopReader(StreamReader& r) {
-    r.run.store(false);
-    while (!r.done.load()) {
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-}
 
 esp_err_t HttpEventHandler(esp_http_client_event_t* event) {
     if (event == nullptr || event->user_data == nullptr) {
@@ -652,7 +568,6 @@ void RadioPlayer::TaskLoop() {
     const size_t first_station = static_cast<size_t>(requested_station_.load());
     size_t current_station = first_station;
 
-    StreamReader reader;
     uint8_t* input_buffer = static_cast<uint8_t*>(malloc(kHttpReadSize));
     uint8_t* output_buffer = static_cast<uint8_t*>(malloc(kDecoderOutputSize));
 
@@ -730,59 +645,60 @@ void RadioPlayer::TaskLoop() {
                  static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
         bool logged_first_bytes = false;
 
-        reader.buffer = xStreamBufferCreate(kRingBytes, 1);
-        if (reader.buffer == nullptr) {
-            reader.buffer = xStreamBufferCreate(kRingFallbackBytes, 1);
-        }
-        if (reader.buffer == nullptr || !StartReader(reader, client)) {
-            ESP_LOGE(TAG, "Cannot start stream reader (free heap %u)",
-                     static_cast<unsigned>(esp_get_free_heap_size()));
-            break;
-        }
-        // Isi buffer dulu supaya awal pemutaran tidak langsung kosong.
-        {
-            const int64_t wait_start_us = esp_timer_get_time();
-            while (!stop_requested_.load() && !reader.lost.load() &&
-                   xStreamBufferBytesAvailable(reader.buffer) < kRingPrebufferBytes &&
-                   (esp_timer_get_time() - wait_start_us) / 1000 < kRingPrebufferTimeoutMs) {
-                vTaskDelay(pdMS_TO_TICKS(50));
-            }
-        }
-
         // Statistik 5 detik untuk mendiagnosis suara putus-putus.
         int64_t stat_window_start_us = esp_timer_get_time();
         int64_t stat_audio_us = 0;
         int64_t stat_dec_us = 0;
+        int64_t stat_max_read_us = 0;
         int64_t stat_bytes = 0;
         unsigned stat_rate = 0;
         unsigned stat_ch = 0;
+        int64_t last_data_us = esp_timer_get_time();
         int reconnect_count = 0;
 
         // Loop streaming.
         while (!stop_requested_.load() && audio.IsRadioPlaybackActive()) {
-            const int read = static_cast<int>(xStreamBufferReceive(
-                reader.buffer, input_buffer, kHttpReadSize, pdMS_TO_TICKS(100)));
+            const int64_t read_t0 = esp_timer_get_time();
+            const int read = esp_http_client_read(
+                client,
+                reinterpret_cast<char*>(input_buffer),
+                kHttpReadSize
+            );
+            const int64_t read_us = esp_timer_get_time() - read_t0;
+            if (read_us > stat_max_read_us) {
+                stat_max_read_us = read_us;
+            }
 
             if (esp_timer_get_time() - stat_window_start_us >= 5000000) {
                 wifi_ap_record_t ap = {};
                 const int rssi = (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) ? ap.rssi : 0;
-                ESP_LOGI(TAG, "Radio stats 5s: audio=%lld ms, decode=%lld ms, max_read=%u ms, ring=%u, bytes=%lld, rssi=%d, %u Hz %u ch, free heap %u",
+                ESP_LOGI(TAG, "Radio stats 5s: audio=%lld ms, decode=%lld ms, max_read=%lld ms, bytes=%lld, rssi=%d, %u Hz %u ch, free heap %u",
                          static_cast<long long>(stat_audio_us / 1000),
                          static_cast<long long>(stat_dec_us / 1000),
-                         static_cast<unsigned>(reader.max_read_ms.exchange(0)),
-                         static_cast<unsigned>(xStreamBufferBytesAvailable(reader.buffer)),
+                         static_cast<long long>(stat_max_read_us / 1000),
                          static_cast<long long>(stat_bytes),
                          rssi, stat_rate, stat_ch,
                          static_cast<unsigned>(esp_get_free_heap_size()));
                 stat_window_start_us = esp_timer_get_time();
                 stat_audio_us = 0;
                 stat_dec_us = 0;
+                stat_max_read_us = 0;
                 stat_bytes = 0;
             }
 
-            // Stream putus: task pembaca menandai lost (error baca, atau tidak ada data
-            // > 3 detik). Sisa data di ring buffer dihabiskan dulu.
-            const bool lost = read == 0 && reader.lost.load();
+            // Stream putus: error baca, atau tidak ada data sama sekali > 3 detik
+            // (server menutup koneksi sehingga read() terus mengembalikan 0).
+            bool lost = false;
+            if (read > 0) {
+                last_data_us = esp_timer_get_time();
+            } else if (read == 0 || read == -ESP_ERR_HTTP_EAGAIN) {
+                if (esp_timer_get_time() - last_data_us >= kStallTimeoutUs) {
+                    lost = true;
+                }
+            } else {
+                ESP_LOGE(TAG, "Radio stream read failed: %d", read);
+                lost = true;
+            }
 
             if (lost) {
                 if (stop_requested_.load()) {
@@ -790,7 +706,6 @@ void RadioPlayer::TaskLoop() {
                 }
                 reconnect_count++;
                 ESP_LOGW(TAG, "Radio stream lost, reconnecting (#%d)", reconnect_count);
-                StopReader(reader);
                 esp_http_client_close(client);
                 esp_http_client_cleanup(client);
                 client = nullptr;
@@ -800,13 +715,11 @@ void RadioPlayer::TaskLoop() {
                     ESP_LOGE(TAG, "Cannot reconnect to any radio station");
                     break;
                 }
-                if (!StartReader(reader, client)) {
-                    ESP_LOGE(TAG, "Cannot restart stream reader");
-                    break;
-                }
+                last_data_us = esp_timer_get_time();
                 stat_window_start_us = esp_timer_get_time();
                 stat_audio_us = 0;
                 stat_dec_us = 0;
+                stat_max_read_us = 0;
                 stat_bytes = 0;
                 continue;
             }
@@ -915,12 +828,7 @@ void RadioPlayer::TaskLoop() {
         }
     } while (false);
 
-    // Bersihkan resource stream. Task pembaca harus berhenti sebelum client ditutup.
-    StopReader(reader);
-    if (reader.buffer != nullptr) {
-        vStreamBufferDelete(reader.buffer);
-        reader.buffer = nullptr;
-    }
+    // Bersihkan resource stream.
     if (client != nullptr) {
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
