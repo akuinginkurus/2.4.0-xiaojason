@@ -243,6 +243,12 @@ void PocketOledDisplay::BuildRadioUI(lv_obj_t* screen) {
     lv_obj_set_style_text_color(radio_fm_, lv_color_white(), 0);
     lv_label_set_text_static(radio_fm_, "FM");
 
+    // Satuan MHz (statis).
+    auto* radio_unit_ = lv_label_create(radio_layer_);
+    lv_obj_set_pos(radio_unit_, 75, 27);
+    lv_obj_set_style_text_color(radio_unit_, lv_color_white(), 0);
+    lv_label_set_text_static(radio_unit_, "MHz");
+
     // Skala dial: garis dasar dengan tanda panjang/pendek.
     static lv_point_precise_t dial_points[kRadioDialTicks * 3 + 1];
     int n = 0;
@@ -292,7 +298,16 @@ void PocketOledDisplay::ShowRadio(const char* payload) {
     if (std::strncmp(name, "Menyambung", 10) == 0) {
         std::snprintf(radio_name_buf_, sizeof(radio_name_buf_), "%s", name);
     } else {
-        std::snprintf(radio_name_buf_, sizeof(radio_name_buf_), "%s by Arie", name);
+        // Disalin manual (bukan snprintf) supaya aman dari -Werror=format-truncation.
+        static constexpr char kCredit[] = " by Arie";
+        constexpr size_t kCreditLen = sizeof(kCredit) - 1;
+        size_t name_len = std::strlen(name);
+        if (name_len > sizeof(radio_name_buf_) - 1 - kCreditLen) {
+            name_len = sizeof(radio_name_buf_) - 1 - kCreditLen;
+        }
+        std::memcpy(radio_name_buf_, name, name_len);
+        std::memcpy(radio_name_buf_ + name_len, kCredit, kCreditLen);
+        radio_name_buf_[name_len + kCreditLen] = '\0';
     }
     std::snprintf(radio_freq_buf_, sizeof(radio_freq_buf_), "%s", freq[0] != '\0' ? freq : "LIVE");
     lv_label_set_text_static(radio_name_, radio_name_buf_);
