@@ -66,9 +66,9 @@ constexpr int64_t kStallTimeoutUs = 3000000;
 
 // Buffer MP3 (terkompresi, ~16 KB/detik) antara task pembaca jaringan dan decoder.
 // Menyerap jeda jaringan; jauh lebih hemat RAM daripada memperbesar antrean PCM.
-constexpr size_t kRingBytes = 12 * 1024;
-constexpr size_t kRingFallbackBytes = 6 * 1024;
-constexpr size_t kRingPrebufferBytes = 6 * 1024;
+constexpr size_t kRingBytes = 20 * 1024;
+constexpr size_t kRingFallbackBytes = 12 * 1024;
+constexpr size_t kRingPrebufferBytes = 12 * 1024;
 constexpr int kRingPrebufferTimeoutMs = 5000;
 constexpr uint32_t kReaderStackSize = 4096;
 
