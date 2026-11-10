@@ -58,6 +58,12 @@ constexpr size_t kHttpReadSize = 1024;
 // Satu frame MP3 stereo 16-bit = 4608 byte.
 constexpr size_t kDecoderOutputSize = 4608;
 constexpr int kRadioOutputRate = 24000;
+// Musik radio dimaster jauh lebih keras dan terang daripada suara Xiaozhi.
+// Gain 100/256 (sekitar -8 dB) menyamakan kerasnya dengan suara Xiaozhi.
+constexpr int32_t kRadioGainQ8 = 100;
+// Low-pass dua tahap (~6 kHz pada 44,1 kHz) sebelum diturunkan ke 24 kHz:
+// membuang desis tinggi dan aliasing yang terdengar "menusuk" di speaker kecil.
+constexpr int64_t kRadioLowPassAlphaQ16 = 37700;  // 0,575
 constexpr int kMaxRedirects = 5;
 constexpr int kConnectTimeoutMs = 8000;
 constexpr int kStartupTimeoutMs = 30000;
@@ -66,9 +72,9 @@ constexpr int64_t kStallTimeoutUs = 3000000;
 
 // Buffer MP3 (terkompresi, ~16 KB/detik) antara task pembaca jaringan dan decoder.
 // Menyerap jeda jaringan; jauh lebih hemat RAM daripada memperbesar antrean PCM.
-constexpr size_t kRingBytes = 20 * 1024;
+constexpr size_t kRingBytes = 16 * 1024;
 constexpr size_t kRingFallbackBytes = 12 * 1024;
-constexpr size_t kRingPrebufferBytes = 12 * 1024;
+constexpr size_t kRingPrebufferBytes = 10 * 1024;
 constexpr int kRingPrebufferTimeoutMs = 5000;
 constexpr uint32_t kReaderStackSize = 4096;
 
@@ -326,6 +332,8 @@ struct LinearResampler {
     uint32_t pos = 0;
     int16_t prev = 0;
     bool primed = false;
+    int32_t lp1 = 0;  // state low-pass
+    int32_t lp2 = 0;
 
     void Configure(uint32_t src, uint32_t dst) {
         if (src == src_rate) {
@@ -405,6 +413,20 @@ bool ConvertAndQueue(
 
     if (mono.empty()) {
         return true;
+    }
+
+    // Low-pass (hanya saat diturunkan ke 24 kHz) lalu kecilkan level.
+    const bool downsample = info.sample_rate > kRadioOutputRate;
+    for (auto& sample : mono) {
+        int32_t x = sample;
+        if (downsample) {
+            resampler.lp1 += static_cast<int32_t>(
+                (static_cast<int64_t>(x - resampler.lp1) * kRadioLowPassAlphaQ16) >> 16);
+            resampler.lp2 += static_cast<int32_t>(
+                (static_cast<int64_t>(resampler.lp1 - resampler.lp2) * kRadioLowPassAlphaQ16) >> 16);
+            x = resampler.lp2;
+        }
+        sample = static_cast<int16_t>((x * kRadioGainQ8) >> 8);
     }
 
     // Resampling ke 24 kHz tanpa alokasi heap besar.
