@@ -287,7 +287,13 @@ void PocketOledDisplay::ShowRadio(const char* payload) {
     const bool numeric = freq[0] >= '0' && freq[0] <= '9';
 
     // Salin ke buffer statis lalu minta label menampilkannya (tanpa malloc).
-    std::snprintf(radio_name_buf_, sizeof(radio_name_buf_), "%s", name);
+    // Nama stasiun diikuti " by Arie" di running text. Teks "Menyambung..." (saat
+    // masih mencari stasiun) tidak diberi tambahan.
+    if (std::strncmp(name, "Menyambung", 10) == 0) {
+        std::snprintf(radio_name_buf_, sizeof(radio_name_buf_), "%s", name);
+    } else {
+        std::snprintf(radio_name_buf_, sizeof(radio_name_buf_), "%s by Arie", name);
+    }
     std::snprintf(radio_freq_buf_, sizeof(radio_freq_buf_), "%s", freq[0] != '\0' ? freq : "LIVE");
     lv_label_set_text_static(radio_name_, radio_name_buf_);
     lv_label_set_text_static(radio_freq_, radio_freq_buf_);
