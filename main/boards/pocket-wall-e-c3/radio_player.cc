@@ -69,6 +69,8 @@ constexpr int kConnectTimeoutMs = 8000;
 constexpr int kStartupTimeoutMs = 30000;
 // Kalau tidak ada data masuk selama ini, anggap stream putus lalu sambung ulang.
 constexpr int64_t kStallTimeoutUs = 3000000;
+// Percobaan sambung ulang ke stasiun yang sama sebelum pindah ke stasiun lain.
+constexpr int kReconnectSameStationAttempts = 5;
 
 // Buffer MP3 (terkompresi, ~16 KB/detik) antara task pembaca jaringan dan decoder.
 // Menyerap jeda jaringan; jauh lebih hemat RAM daripada memperbesar antrean PCM.
@@ -299,6 +301,32 @@ esp_http_client_handle_t ReconnectStation(
     HttpResponseHeaders& headers,
     const std::atomic<bool>& stop_requested) {
 
+    // Stasiun yang sedang dipakai dicoba berulang dulu (jeda makin lama). Pindah ke
+    // stasiun lain hanya kalau semua percobaan ini gagal.
+    for (int attempt = 0; attempt < kReconnectSameStationAttempts; attempt++) {
+        if (stop_requested.load()) {
+            return nullptr;
+        }
+        ESP_LOGI(TAG, "Reconnecting to %s, attempt %d/%d (free heap %u, largest block %u)",
+                 kStations[current_station].name, attempt + 1, kReconnectSameStationAttempts,
+                 static_cast<unsigned>(esp_get_free_heap_size()),
+                 static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+        esp_http_client_handle_t client =
+            ConnectStation(kStations[current_station], headers, stop_requested);
+        if (client != nullptr) {
+            ShowRadioOnDisplay(kStations[current_station].name, kStations[current_station].freq);
+            ESP_LOGI(TAG, "Reconnected to %s", kStations[current_station].name);
+            return client;
+        }
+        // Tunggu 1 s, 2 s, 3 s, ... sambil tetap peka terhadap tombol stop.
+        for (int i = 0; i < (attempt + 1) * 10; i++) {
+            if (stop_requested.load()) {
+                return nullptr;
+            }
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+    }
+
     for (int round = 0; round < 2; round++) {
         for (size_t n = 0; n < kStationCount; n++) {
             if (stop_requested.load()) {
@@ -493,9 +521,8 @@ void RestoreAfterRadio() {
     // Kembalikan layar ke wajah Wall-E.
     Board::GetInstance().GetDisplay()->SetStatus("RADIO_END");
 
-    // Timpa sisa teks chat lama ("% self.radio.play...") dengan pesan yang jelas.
-    // Dipanggil setelah codec dipulihkan, jadi alokasi teks LVGL aman di sini.
-    Board::GetInstance().GetDisplay()->SetChatMessage("system", "Radio dihentikan");
+    // Idle hanya menampilkan jam (ditangani layar saat status "RADIO_END"/standby),
+    // jadi tidak ada pesan teks lagi di sini.
 
     if (app.GetDeviceState() == kDeviceStateIdle) {
         // Pastikan voice processing tidak tertinggal aktif.
