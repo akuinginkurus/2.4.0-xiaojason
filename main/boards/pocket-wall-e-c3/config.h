@@ -15,8 +15,17 @@
 #define DISPLAY_SDA_PIN GPIO_NUM_4
 #define DISPLAY_SCL_PIN GPIO_NUM_5
 #define DISPLAY_WIDTH 128
-#define DISPLAY_HEIGHT 64
+
+#if CONFIG_OLED_SSD1306_128X64
+#define DISPLAY_HEIGHT  64
+#elif CONFIG_OLED_SH1106_128X64
+#define DISPLAY_HEIGHT  64
 #define SH1106
+#else
+#error "OLED display type is not selected"
+#endif
+#define SH1106
+
 #define DISPLAY_MIRROR_X true
 #define DISPLAY_MIRROR_Y true
 
