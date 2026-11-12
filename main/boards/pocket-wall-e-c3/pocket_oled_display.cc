@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 
 #define TAG "PocketOled"
 
@@ -365,9 +366,9 @@ void PocketOledDisplay::SetStatus(const char* status) {
         }
         standby_ = true;
         SetFaceMode(FaceMode::kSleepy);
-        if (!has_chat_text_ && chat_line_ != nullptr) {
-            lv_label_set_text(chat_line_, Lang::Strings::STANDBY);
-        }
+        // Idle: hanya jam yang tampil, tanpa teks lain.
+        has_chat_text_ = false;
+        UpdateClock(true);
         return;
     }
 
@@ -400,7 +401,11 @@ void PocketOledDisplay::SetStatus(const char* status) {
     } else if (standby_) {
         SetFaceMode(FaceMode::kSleepy);  // idle: mengantuk
     }
-    if (!has_chat_text_ && chat_line_ != nullptr) {
+    if (standby_) {
+        // Idle: hanya jam yang tampil, tanpa teks lain (termasuk sisa chat).
+        has_chat_text_ = false;
+        UpdateClock(true);
+    } else if (!has_chat_text_ && chat_line_ != nullptr) {
         lv_label_set_text(chat_line_, status);
     }
 }
@@ -471,11 +476,47 @@ void PocketOledDisplay::ApplyLayout() {
     UpdateAnimationFrame();
 }
 
+// Menulis "HH:MM" ke baris bawah. Waktu belum tersinkron (tahun < 2024): kosong.
+// Memakai buffer statis dan tanpa snprintf, jadi tidak ada alokasi heap.
+void PocketOledDisplay::UpdateClock(bool force) {
+    if (chat_line_ == nullptr) {
+        return;
+    }
+    const time_t now = std::time(nullptr);
+    struct tm tm_now = {};
+    localtime_r(&now, &tm_now);
+
+    int key = -2;  // belum tersinkron
+    if (tm_now.tm_year >= 124) {
+        const int hour = ((tm_now.tm_hour % 24) + 24) % 24;
+        const int minute = ((tm_now.tm_min % 60) + 60) % 60;
+        key = hour * 60 + minute;
+        clock_buf_[0] = static_cast<char>('0' + hour / 10);
+        clock_buf_[1] = static_cast<char>('0' + hour % 10);
+        clock_buf_[2] = ':';
+        clock_buf_[3] = static_cast<char>('0' + minute / 10);
+        clock_buf_[4] = static_cast<char>('0' + minute % 10);
+        clock_buf_[5] = '\0';
+    } else {
+        clock_buf_[0] = '\0';
+    }
+    if (!force && key == last_clock_key_) {
+        return;
+    }
+    last_clock_key_ = key;
+    lv_label_set_text_static(chat_line_, clock_buf_);
+}
+
 void PocketOledDisplay::UpdateAnimationFrame() {
     if (face_layer_ == nullptr) {
         return;
     }
     ++animation_tick_;
+
+    // Idle: perbarui jam tiap ~1 detik (teks hanya diganti saat menitnya berubah).
+    if (standby_ && !radio_active_ && !has_chat_text_ && (animation_tick_ % 25) == 0) {
+        UpdateClock(false);
+    }
 
     // Saat radio diputar, animasi mata dilewati (hemat CPU) dan equalizer yang jalan.
     if (radio_active_) {
