@@ -72,6 +72,8 @@ private:
 
     FaceMode face_mode_ = FaceMode::kNeutral;
     uint32_t animation_tick_ = 0;
+    char clock_buf_[8] = {0};  // "HH:MM" untuk layar idle
+    int last_clock_key_ = -1;
     uint32_t standby_start_tick_ = 0;  // awal idle, untuk mengantuk bertahap
     uint32_t random_state_ = 0x57414C4C;
     uint32_t next_blink_tick_ = 45;
@@ -92,6 +94,7 @@ private:
 
     static void AnimationTimerCallback(lv_timer_t* timer);
     void UpdateAnimationFrame();
+    void UpdateClock(bool force);
     void ApplyLayout();
     void SetFaceMode(FaceMode mode);
     FaceMode FaceModeFromEmotion(const char* emotion) const;
