@@ -205,6 +205,9 @@ private:
     int32_t previous_input_ = 0;
     int32_t previous_output_ = 0;
     int32_t gain_q12_ = 4096;
+    int log_counter_ = 0;
+    int32_t log_raw_max_ = 0;
+    int32_t log_peak_ = 0;
 
 public:
     PocketAudioCodec(int sample_rate,
@@ -241,6 +244,10 @@ protected:
         int32_t peak = 1;
 
         for (int i = 0; i < count; ++i) {
+            const int32_t raw_abs = raw[i] < 0 ? -(raw[i] >> 8) : (raw[i] >> 8);
+            if (raw_abs > log_raw_max_) {
+                log_raw_max_ = raw_abs;
+            }
             const int32_t input = raw[i] >> 14;
 
             const int32_t high_pass =
@@ -258,6 +265,19 @@ protected:
             if (magnitude > peak) {
                 peak = magnitude;
             }
+        }
+
+        if (peak > log_peak_) {
+            log_peak_ = peak;
+        }
+        if (++log_counter_ >= 16) {
+            ESP_LOGI(TAG, "Mic level: raw24 max=%d, peak=%d, gain=%.2fx",
+                     static_cast<int>(log_raw_max_),
+                     static_cast<int>(log_peak_),
+                     gain_q12_ / 4096.0f);
+            log_counter_ = 0;
+            log_raw_max_ = 0;
+            log_peak_ = 0;
         }
 
         int32_t target_gain_q12 =
