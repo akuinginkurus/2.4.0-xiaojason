@@ -28,9 +28,9 @@
 
 // HC-SR04 dinonaktifkan (pin 0 dan 3 dipakai I2S).
 // Objek ObstacleAvoidance tidak dibuat di motor_controller.cc.
-//#define ULTRASONIC_TRIG_PIN GPIO_NUM_0
-//#define ULTRASONIC_ECHO_PIN GPIO_NUM_3
-//#define ULTRASONIC_OBSTACLE_DISTANCE_CM 20
+#define ULTRASONIC_TRIG_PIN GPIO_NUM_0
+#define ULTRASONIC_ECHO_PIN GPIO_NUM_3
+#define ULTRASONIC_OBSTACLE_DISTANCE_CM 20
 
 // MX1508 dual H-bridge.
 #define MOTOR_LEFT_IN1_PIN GPIO_NUM_6
