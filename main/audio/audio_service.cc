@@ -1,5 +1,6 @@
 #include "audio_service.h"
 #include <esp_log.h>
+#include <esp_system.h>
 #include <cstring>
 
 #define RATE_CVT_CFG(_src_rate, _dest_rate, _channel)        \
@@ -701,8 +702,11 @@ void AudioService::EnableVoiceProcessing(bool enable) {
 
     if (enable) {
         if (!InitializeAudioEngine()) {
+            ESP_LOGE(TAG, "Voice processing NOT started: audio engine unavailable (music_mode=%d, free sram=%u)",
+                     (int)g_music_mode, (unsigned)esp_get_free_internal_heap_size());
             return;
         }
+        ESP_LOGI(TAG, "Voice processing started (free sram=%u)", (unsigned)esp_get_free_internal_heap_size());
         ResetDecoder();
         audio_input_need_warmup_ = true;
         {
