@@ -746,11 +746,17 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
 
         if (http->GetStatusCode() != 200) {
             ESP_LOGE(TAG, "Stream returned HTTP %d", http->GetStatusCode());
+            const int http_status = http->GetStatusCode();
             {
                 std::lock_guard<std::mutex> lock(http_mutex_);
                 active_http_ = nullptr;
             }
             http->Close();
+            if (http_status == 416) {
+                // Requested offset is past the end of the audio: the song is over.
+                ESP_LOGI(TAG, "HTTP 416 at %.2fs: treating as end of song", frames_pushed * 0.060f);
+                break;
+            }
             if (frames_pushed > 0 && downshift_retries < kMaxRetries && !abort_requested_.load()) {
                 downshift_retries++;
                 vTaskDelay(pdMS_TO_TICKS(500 * downshift_retries));
@@ -872,7 +878,13 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
                              (unsigned int)session_bytes, session_frames, (unsigned int)total_bytes_streamed, frames_pushed);
                     // YouTube CDN sometimes drops TCP prematurely after 1-2 minutes.
                     // Auto-resume from offset start_sec if frames were pushed.
-                    if (frames_pushed > 0 && session_bytes > 0 && eof_retries < 2 && !abort_requested_.load()) {
+                    const bool near_song_end = total_duration_sec_ > 0 &&
+                        (frames_pushed * 0.060f) >= (float)total_duration_sec_ - 4.0f;
+                    if (near_song_end) {
+                        ESP_LOGI(TAG, "EOF near end of song (%.2fs of %ds): finishing normally",
+                                 frames_pushed * 0.060f, total_duration_sec_);
+                    }
+                    if (!near_song_end && frames_pushed > 0 && session_bytes > 0 && eof_retries < 2 && !abort_requested_.load()) {
                         eof_retries++;
                         need_downshift = true;
                         ESP_LOGI(TAG, "Potential premature EOF from YouTube/CDN! Auto-resuming at %.2fs (probe %d/2)...",
