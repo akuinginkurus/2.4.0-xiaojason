@@ -24,6 +24,8 @@
 #endif
 
 #include <esp_log.h>
+#include <esp_timer.h>
+#include <esp_wifi.h>
 #include <cstdint>
 #include <climits>
 #include <vector>
@@ -487,6 +489,34 @@ private:
     }
 
 
+    // Saat idle, kalau WiFi putus dan library WiFi sudah berhenti mencoba,
+    // paksa sambung ulang tiap ~30 detik supaya tidak perlu menekan reset.
+    void InitializeWifiWatchdog() {
+        static esp_timer_handle_t wifi_watchdog_timer = nullptr;
+        esp_timer_create_args_t args = {};
+        args.callback = [](void*) {
+            static int disconnected_ticks = 0;
+            if (Application::GetInstance().GetDeviceState() != kDeviceStateIdle) {
+                disconnected_ticks = 0;
+                return;
+            }
+            wifi_ap_record_t ap_info;
+            if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_ERR_WIFI_NOT_CONNECT) {
+                if (++disconnected_ticks >= 2) {
+                    ESP_LOGW(TAG, "WiFi lost while idle, forcing reconnect");
+                    esp_wifi_connect();
+                    disconnected_ticks = 0;
+                }
+            } else {
+                disconnected_ticks = 0;
+            }
+        };
+        args.name = "wifi_watchdog";
+        if (esp_timer_create(&args, &wifi_watchdog_timer) == ESP_OK) {
+            esp_timer_start_periodic(wifi_watchdog_timer, 15 * 1000 * 1000);
+        }
+    }
+
 public:
     PocketWallEC3Board()
         : action_button_(ACTION_BUTTON_GPIO) {
@@ -494,6 +524,7 @@ public:
         InitializeDisplayI2c();
         InitializeDisplay();
         InitializeButton();
+        InitializeWifiWatchdog();
 
         motor_controller_ = new MotorController(
             MOTOR_LEFT_IN1_PIN,
@@ -537,6 +568,14 @@ public:
         return display_;
     }
 
+
+    // Selama pengembangan (dicolok listrik terus): WiFi tidak pernah masuk mode
+    // hemat daya (modem sleep), supaya koneksi ke hotspot tetap stabil saat idle.
+    // Kembalikan ke bawaan (hapus fungsi ini) saat memakai baterai.
+    virtual void SetPowerSaveLevel(PowerSaveLevel level) override {
+        (void)level;
+        WifiBoard::SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+    }
 
     bool GetBatteryLevel(
         int& level,
