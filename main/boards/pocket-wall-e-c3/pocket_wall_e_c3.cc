@@ -223,6 +223,16 @@ public:
               dout,
               din) {}
 
+    // Pada I2S duplex berbagi clock, RX hanya mendapat BCLK/WS saat TX aktif.
+    // Power timer bisa mematikan output saat idle, sehingga mic mati (read timeout)
+    // ketika input dinyalakan lagi. Pastikan output ikut aktif bersama input.
+    void EnableInput(bool enable) override {
+        if (enable && !output_enabled()) {
+            EnableOutput(true);
+        }
+        NoAudioCodecDuplex::EnableInput(enable);
+    }
+
 protected:
     int Read(int16_t* dest, int samples) override {
         std::vector<int32_t> raw(samples);
