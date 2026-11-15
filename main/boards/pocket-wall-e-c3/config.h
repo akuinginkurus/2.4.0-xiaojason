@@ -21,7 +21,7 @@
 #define DISPLAY_MIRROR_X false
 #define DISPLAY_MIRROR_Y false
 // true = tampilan terbalik (teks gelap di latar menyala), false = teks menyala di latar gelap.
-#define DISPLAY_INVERT_COLOR false
+#define DISPLAY_INVERT_COLOR true
 
 #define BUILTIN_LED_GPIO GPIO_NUM_12  // LED onboard LuatOS (aman karena flash mode DIO)
 
