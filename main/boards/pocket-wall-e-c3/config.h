@@ -20,6 +20,8 @@
 #define SH1106
 #define DISPLAY_MIRROR_X false
 #define DISPLAY_MIRROR_Y false
+// true = tampilan terbalik (teks gelap di latar menyala), false = teks menyala di latar gelap.
+#define DISPLAY_INVERT_COLOR false
 
 #define BUILTIN_LED_GPIO GPIO_NUM_12  // LED onboard LuatOS (aman karena flash mode DIO)
 
@@ -27,9 +29,10 @@
 
 #define BATTERY_ADC_GPIO GPIO_NUM_1
 
-// HC-SR04 (versi 3.3V) di header IO18 (TRIG) dan IO19 (ECHO).
-#define ULTRASONIC_TRIG_PIN GPIO_NUM_18  // header IO18
-#define ULTRASONIC_ECHO_PIN GPIO_NUM_19  // header IO19 (sensor versi 3.3V, tanpa pembagi)
+// HC-SR04 (versi 3.3V) di pin RX0/TX0 (GPIO20/21).
+// Jangan pakai IO18/IO19: itu pin USB, dan memakainya mematikan serial USB.
+#define ULTRASONIC_TRIG_PIN GPIO_NUM_21  // header TX0
+#define ULTRASONIC_ECHO_PIN GPIO_NUM_20  // header RX0
 #define ULTRASONIC_OBSTACLE_DISTANCE_CM 20
 
 // MX1508 dual H-bridge.
