@@ -1,7 +1,7 @@
-
 #include "motor_controller.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdlib>
 #include <string>
@@ -19,6 +19,51 @@ constexpr ledc_mode_t kSpeedMode = LEDC_LOW_SPEED_MODE;
 constexpr ledc_timer_t kTimer = LEDC_TIMER_2;
 constexpr ledc_timer_bit_t kDutyResolution = LEDC_TIMER_10_BIT;
 constexpr uint32_t kMaxDuty = (1U << 10) - 1;
+
+// Gerakan singkat saat lagu mulai diputar.
+MotorController* g_wiggle_motor = nullptr;
+std::atomic<bool> g_wiggle_running{false};
+
+void WiggleTask(void*) {
+    MotorController* motor = g_wiggle_motor;
+
+    if (motor != nullptr &&
+        !motor->IsMoving() &&
+        !motor->IsAutonomousMode()) {
+        motor->Drive(-100, 100, 200);
+        vTaskDelay(pdMS_TO_TICKS(380));
+        motor->Drive(100, -100, 400);
+        vTaskDelay(pdMS_TO_TICKS(580));
+        motor->Drive(-100, 100, 200);
+        vTaskDelay(pdMS_TO_TICKS(380));
+        motor->Stop(false);
+    }
+
+    g_wiggle_running.store(false);
+    vTaskDelete(nullptr);
+}
+}
+
+// Dipanggil dari layar saat mode lagu dimulai.
+void PocketRobotSongStartWiggle() {
+    if (g_wiggle_motor == nullptr) {
+        return;
+    }
+
+    bool expected = false;
+    if (!g_wiggle_running.compare_exchange_strong(expected, true)) {
+        return;
+    }
+
+    if (xTaskCreate(
+            WiggleTask,
+            "song_wiggle",
+            3072,
+            nullptr,
+            3,
+            nullptr) != pdPASS) {
+        g_wiggle_running.store(false);
+    }
 }
 
 MotorController::MotorController(
@@ -27,6 +72,8 @@ MotorController::MotorController(
     gpio_num_t right_in1,
     gpio_num_t right_in2)
     : pins_{left_in1, left_in2, right_in1, right_in2} {
+
+    g_wiggle_motor = this;
 
     ConfigurePwm();
     ApplySpeeds(0, 0);
@@ -57,6 +104,8 @@ MotorController::MotorController(
 }
 
 MotorController::~MotorController() {
+    g_wiggle_motor = nullptr;
+
     if (obstacle_avoidance_ != nullptr) {
         delete obstacle_avoidance_;
         obstacle_avoidance_ = nullptr;
