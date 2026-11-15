@@ -1,4 +1,3 @@
-
 #ifndef POCKET_OLED_DISPLAY_H
 #define POCKET_OLED_DISPLAY_H
 
@@ -46,6 +45,10 @@ private:
     lv_obj_t* right_bottom_lid_ = nullptr;
     lv_obj_t* chat_line_ = nullptr;
 
+    // Penutup alis miring (segitiga digambar langsung) untuk ANGRY / SAD.
+    lv_obj_t* left_brow_cover_ = nullptr;
+    lv_obj_t* right_brow_cover_ = nullptr;
+
     // Battery screen: hidden until the user requests battery status.
     lv_obj_t* battery_overlay_ = nullptr;
     lv_obj_t* battery_icon_body_ = nullptr;
@@ -76,11 +79,16 @@ private:
     uint32_t next_idle_tick_ = 30;
     uint32_t music_last_update_ = 0;
 
-    int current_look_x_ = 0;
-    int current_look_y_ = 0;
+    // Posisi dan ukuran disimpan dalam satuan 1/16 piksel (Q4)
+    // supaya gerakan mata meluncur halus, bukan melompat per piksel.
+    int look_x_q_ = 0;
+    int look_y_q_ = 0;
+    int eye_height_q_ = 2 * 16;
+    int brow_q_ = 0;
+    bool brow_angry_ = true;
+
     int target_look_x_ = 0;
     int target_look_y_ = 0;
-    int current_eye_height_ = 2;
 
     bool has_chat_text_ = false;
     bool music_mode_ = false;
