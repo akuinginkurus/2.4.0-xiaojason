@@ -7,7 +7,7 @@
 #define AUDIO_OUTPUT_SAMPLE_RATE 24000
 
 // Shared-clock full-duplex I2S: INMP441 + MAX98357A.
-// Pin aman: tidak memakai GPIO11-19 (flash / USB).
+// I2S memakai pin 0, 3, 7, 10 (tidak bentrok dengan pin lain).
 #define AUDIO_I2S_GPIO_BCLK GPIO_NUM_3   // MAX98357A BCLK + INMP441 SCK
 #define AUDIO_I2S_GPIO_WS GPIO_NUM_0     // MAX98357A LRC  + INMP441 WS
 #define AUDIO_I2S_GPIO_DOUT GPIO_NUM_7   // ke MAX98357A DIN
@@ -26,10 +26,9 @@
 
 #define BATTERY_ADC_GPIO GPIO_NUM_1
 
-// HC-SR04 dinonaktifkan (pin 0 dan 3 dipakai I2S).
-// Objek ObstacleAvoidance tidak dibuat di motor_controller.cc.
-#define ULTRASONIC_TRIG_PIN GPIO_NUM_0
-#define ULTRASONIC_ECHO_PIN GPIO_NUM_3
+// HC-SR04 (versi 3.3V) di header IO18 (TRIG) dan IO19 (ECHO).
+#define ULTRASONIC_TRIG_PIN GPIO_NUM_18  // header IO18
+#define ULTRASONIC_ECHO_PIN GPIO_NUM_19  // header IO19 (sensor versi 3.3V, tanpa pembagi)
 #define ULTRASONIC_OBSTACLE_DISTANCE_CM 20
 
 // MX1508 dual H-bridge.
