@@ -19,6 +19,7 @@
 #define SH1106
 #define DISPLAY_MIRROR_X true
 #define DISPLAY_MIRROR_Y true
+#define DISPLAY_INVERT_COLOR true
 
 #define BUILTIN_LED_GPIO GPIO_NUM_8
 
