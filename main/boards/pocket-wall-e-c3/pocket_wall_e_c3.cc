@@ -446,8 +446,17 @@ private:
 
         ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_));
         ESP_ERROR_CHECK(esp_lcd_panel_init(panel_));
-        ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_, DISPLAY_INVERT_COLOR));
+        // Driver SH1106 pihak ketiga tidak menerapkan invert_color, jadi kirim
+        // perintah inversi (0xA7 = terbalik, 0xA6 = normal) langsung ke panel.
+        auto send_invert = [this]() {
+            esp_err_t err = esp_lcd_panel_io_tx_param(
+                panel_io_, DISPLAY_INVERT_COLOR ? 0xA7 : 0xA6, nullptr, 0);
+            ESP_LOGI(TAG, "Display invert=%d: %s", (int)DISPLAY_INVERT_COLOR,
+                     esp_err_to_name(err));
+        };
+        esp_lcd_panel_invert_color(panel_, DISPLAY_INVERT_COLOR);
         ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_, true));
+        send_invert();
 
         display_ = new PocketOledDisplay(
             panel_io_,
@@ -456,6 +465,7 @@ private:
             DISPLAY_HEIGHT,
             DISPLAY_MIRROR_X,
             DISPLAY_MIRROR_Y);
+        send_invert();
     }
 
 
