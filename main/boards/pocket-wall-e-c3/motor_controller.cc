@@ -52,8 +52,8 @@ MotorController::MotorController(
 
     RegisterMcpTools();
 
-    // Sensor ultrasonik dinonaktifkan: GPIO0/GPIO3 dipakai I2S.
-    // obstacle_avoidance_ = new ObstacleAvoidance(this);
+
+    obstacle_avoidance_ = new ObstacleAvoidance(this);
 }
 
 MotorController::~MotorController() {
