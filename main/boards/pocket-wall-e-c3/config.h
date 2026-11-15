@@ -18,8 +18,8 @@
 #define DISPLAY_WIDTH 128
 #define DISPLAY_HEIGHT 64
 #define SH1106
-#define DISPLAY_MIRROR_X true
-#define DISPLAY_MIRROR_Y true
+#define DISPLAY_MIRROR_X false
+#define DISPLAY_MIRROR_Y false
 
 #define BUILTIN_LED_GPIO GPIO_NUM_12  // LED onboard LuatOS (aman karena flash mode DIO)
 
