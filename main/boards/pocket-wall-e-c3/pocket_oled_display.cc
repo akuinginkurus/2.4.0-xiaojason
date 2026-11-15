@@ -4,9 +4,14 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <initializer_list>
+
+// Didefinisikan di motor_controller.cc: gerakkan robot sebentar saat lagu mulai.
+extern void PocketRobotSongStartWiggle();
 
 namespace {
 
@@ -18,12 +23,12 @@ constexpr int kSleepyEyeOffsetY = 14;
 // angry -> sad -> normal. Ubah ke false bila sudah benar.
 constexpr bool kFaceDemo = false;
 
-// Bentuk mata ANGRY / SAD: badan mata (rounded) dipotong miring
-// oleh potongan persegi hitam bertingkat halus, tanpa rotation.
+// Bentuk mata ANGRY / SAD: alis miring digambar sebagai segitiga
+// (garis miring presisi, bukan potongan bertingkat), tanpa rotation.
 constexpr int kSlantDrop = 8;        // selisih tinggi sisi luar vs dalam
-constexpr int kSlantStrips = 6;     // jumlah potongan penutup per mata
 constexpr int kSlantBodyExtra = 9;   // badan mata dinaikkan agar sudut atas
-                                     // yang membulat tersembunyi di balik garis
+                                     // yang membulat tersembunyi di balik alis
+constexpr int kQ = 16;               // satuan Q4: 16 = 1 piksel
 constexpr int kAngryEyeHeight = 28;
 constexpr int kSadEyeHeight = 24;
 
@@ -78,8 +83,13 @@ int DetectEmotionFromText(const char* role, const char* content) {
     return 0;
 }
 
-lv_obj_t* g_left_strips[kSlantStrips] = {nullptr};
-lv_obj_t* g_right_strips[kSlantStrips] = {nullptr};
+struct BrowInfo {
+    int drop;        // selisih tinggi miring, dalam piksel
+    bool left_high;  // true bila sisi kiri penutup yang lebih tinggi
+};
+
+BrowInfo g_left_brow = {0, true};
+BrowInfo g_right_brow = {0, false};
 
 void PrepareShape(lv_obj_t* object) {
     lv_obj_remove_style_all(object);
@@ -92,49 +102,88 @@ bool Contains(const char* text, const char* value) {
            std::strstr(text, value) != nullptr;
 }
 
-int Ease(int current, int target) {
-    if (current == target) {
-        return current;
+// Gelombang sinus kasar: hasil -127..127, satu putaran = period tick.
+int SinWave(uint32_t tick, uint32_t period) {
+    static constexpr int8_t kSin32[32] = {
+        0, 25, 49, 71, 90, 106, 117, 125,
+        127, 125, 117, 106, 90, 71, 49, 25,
+        0, -25, -49, -71, -90, -106, -117, -125,
+        -127, -125, -117, -106, -90, -71, -49, -25};
+    if (period == 0) {
+        return 0;
     }
+    return kSin32[((tick % period) * 32) / period];
+}
+
+// Mendekatkan nilai ke target secara halus. divisor besar = lebih lambat.
+int EaseQ(int current, int target, int divisor) {
     const int delta = target - current;
-    if (delta > 0) {
-        return current + std::max(1, delta / 3);
+    if (delta > -2 && delta < 2) {
+        return target;
     }
-    return current + std::min(-1, delta / 3);
+    int step = delta / divisor;
+    if (step == 0) {
+        step = delta > 0 ? 1 : -1;
+    }
+    return current + step;
 }
 
-void HideStrips(lv_obj_t** strips) {
-    for (int i = 0; i < kSlantStrips; ++i) {
-        if (strips[i] != nullptr) {
-            lv_obj_add_flag(strips[i], LV_OBJ_FLAG_HIDDEN);
-        }
-    }
+// Q4 -> piksel dengan pembulatan ke terdekat (aman untuk nilai negatif).
+int RoundQ(int value_q) {
+    return value_q >= 0 ? (value_q + kQ / 2) / kQ
+                        : -((-value_q + kQ / 2) / kQ);
 }
 
-// Pasang penutup miring di atas satu mata.
-// top_y     : y tepi atas mata di sisi yang paling tinggi
-// left_high : true bila sisi kiri mata yang lebih tinggi
-void ApplySlant(
-    lv_obj_t** strips,
-    int eye_x,
-    int eye_w,
-    int top_y,
-    bool left_high) {
-    const int strip_w = (eye_w + kSlantStrips - 1) / kSlantStrips;
-    const int cover_top = top_y - kSlantBodyExtra;
-    for (int i = 0; i < kSlantStrips; ++i) {
-        if (strips[i] == nullptr) {
-            continue;
-        }
-        const int idx = left_high ? i : (kSlantStrips - 1 - i);
-        const int edge =
-            top_y + (kSlantDrop * (2 * idx + 1)) / (2 * kSlantStrips);
-        const int x = eye_x + i * strip_w;
-        const int w = std::min(strip_w, eye_w - i * strip_w);
-        lv_obj_set_pos(strips[i], x, cover_top);
-        lv_obj_set_size(strips[i], w, edge - cover_top);
-        lv_obj_remove_flag(strips[i], LV_OBJ_FLAG_HIDDEN);
+// Menggambar penutup alis: persegi hitam di atas + segitiga hitam miring
+// di bawahnya, sehingga tepi miring tepat satu piksel per langkah.
+void BrowCoverDrawCb(lv_event_t* e) {
+    auto* object = static_cast<lv_obj_t*>(lv_event_get_target(e));
+    auto* info = static_cast<BrowInfo*>(lv_event_get_user_data(e));
+    lv_layer_t* layer = lv_event_get_layer(e);
+    if (object == nullptr || info == nullptr || layer == nullptr) {
+        return;
     }
+
+    lv_area_t area;
+    lv_obj_get_coords(object, &area);
+
+    const int drop = info->drop;
+
+    lv_draw_rect_dsc_t rect_dsc;
+    lv_draw_rect_dsc_init(&rect_dsc);
+    rect_dsc.bg_color = lv_color_black();
+    rect_dsc.bg_opa = LV_OPA_COVER;
+    rect_dsc.radius = 0;
+
+    lv_area_t rect_area = {area.x1, area.y1, area.x2, area.y2 - drop};
+    lv_draw_rect(layer, &rect_dsc, &rect_area);
+
+    if (drop <= 0) {
+        return;
+    }
+
+    lv_draw_triangle_dsc_t tri_dsc;
+    lv_draw_triangle_dsc_init(&tri_dsc);
+    tri_dsc.color = lv_color_black();
+    tri_dsc.opa = LV_OPA_COVER;
+
+    const int top = area.y2 - drop + 1;
+    if (info->left_high) {
+        tri_dsc.p[0].x = area.x1;
+        tri_dsc.p[0].y = top;
+        tri_dsc.p[1].x = area.x2 + 1;
+        tri_dsc.p[1].y = top;
+        tri_dsc.p[2].x = area.x2 + 1;
+        tri_dsc.p[2].y = top + drop;
+    } else {
+        tri_dsc.p[0].x = area.x2 + 1;
+        tri_dsc.p[0].y = top;
+        tri_dsc.p[1].x = area.x1;
+        tri_dsc.p[1].y = top;
+        tri_dsc.p[2].x = area.x1;
+        tri_dsc.p[2].y = top + drop;
+    }
+    lv_draw_triangle(layer, &tri_dsc);
 }
 
 } // namespace
@@ -163,11 +212,9 @@ PocketOledDisplay::~PocketOledDisplay() {
         lv_obj_delete(face_layer_);
         face_layer_ = nullptr;
     }
-    // Potongan penutup adalah anak face_layer_, ikut terhapus.
-    for (int i = 0; i < kSlantStrips; ++i) {
-        g_left_strips[i] = nullptr;
-        g_right_strips[i] = nullptr;
-    }
+    // Penutup alis adalah anak face_layer_, ikut terhapus.
+    left_brow_cover_ = nullptr;
+    right_brow_cover_ = nullptr;
 }
 
 void PocketOledDisplay::SetupUI() {
@@ -222,18 +269,17 @@ void PocketOledDisplay::SetupUI() {
         lv_obj_add_flag(lid, LV_OBJ_FLAG_HIDDEN);
     }
 
-    // Potongan penutup miring untuk ekspresi ANGRY / SAD.
-    for (int i = 0; i < kSlantStrips; ++i) {
-        for (auto** slot : {&g_left_strips[i], &g_right_strips[i]}) {
-            *slot = lv_obj_create(face_layer_);
-            PrepareShape(*slot);
-            lv_obj_set_style_bg_color(*slot, lv_color_black(), 0);
-            lv_obj_set_style_bg_opa(*slot, LV_OPA_COVER, 0);
-            lv_obj_set_style_radius(*slot, 0, 0);
-            lv_obj_set_style_border_width(*slot, 0, 0);
-            lv_obj_add_flag(*slot, LV_OBJ_FLAG_HIDDEN);
-        }
-    }
+    // Penutup alis miring untuk ekspresi ANGRY / SAD (digambar segitiga).
+    left_brow_cover_ = lv_obj_create(face_layer_);
+    right_brow_cover_ = lv_obj_create(face_layer_);
+    PrepareShape(left_brow_cover_);
+    PrepareShape(right_brow_cover_);
+    lv_obj_add_event_cb(
+        left_brow_cover_, BrowCoverDrawCb, LV_EVENT_DRAW_MAIN, &g_left_brow);
+    lv_obj_add_event_cb(
+        right_brow_cover_, BrowCoverDrawCb, LV_EVENT_DRAW_MAIN, &g_right_brow);
+    lv_obj_add_flag(left_brow_cover_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(right_brow_cover_, LV_OBJ_FLAG_HIDDEN);
 
     chat_line_ = lv_label_create(screen);
     lv_obj_set_pos(chat_line_, 0, 48);
@@ -403,7 +449,7 @@ void PocketOledDisplay::ApplyLayout() {
     lv_obj_set_style_radius(left_eye_, 9, 0);
     lv_obj_set_style_radius(right_eye_, 9, 0);
 
-    current_eye_height_ = std::min(current_eye_height_, 36);
+    eye_height_q_ = std::min(eye_height_q_, 36 * kQ);
 
     lv_obj_move_foreground(face_layer_);
     if (chat_line_ != nullptr) {
@@ -450,34 +496,47 @@ void PocketOledDisplay::UpdateAnimationFrame() {
     constexpr int max_look_x = 7;
     constexpr int max_look_y = 4;
 
-    if (animation_tick_ >= next_blink_tick_) {
-        blink_until_tick_ = animation_tick_ + 3;
-        next_blink_tick_ =
-            animation_tick_ + 70 + (NextRandom() % 100);
+    const uint32_t tick = animation_tick_;
+
+    // Kedip: kadang sekali, kadang dua kali berturut-turut.
+    if (tick >= next_blink_tick_) {
+        blink_until_tick_ = tick + 4;
+        if ((NextRandom() % 4) == 0) {
+            next_blink_tick_ = tick + 9;
+        } else {
+            next_blink_tick_ = tick + 70 + (NextRandom() % 100);
+        }
     }
 
-    const bool blink = animation_tick_ < blink_until_tick_;
+    const bool blink = tick < blink_until_tick_;
 
-    if (animation_tick_ >= next_idle_tick_ &&
+    // Pandangan acak saat diam: kadang kembali ke tengah, kadang melirik.
+    if (tick >= next_idle_tick_ &&
         face_mode_ == FaceMode::kNeutral) {
-        target_look_x_ =
-            static_cast<int>(
-                NextRandom() % (max_look_x * 2 + 1)) -
-            max_look_x;
-        target_look_y_ =
-            static_cast<int>(
-                NextRandom() % (max_look_y * 2 + 1)) -
-            max_look_y;
-        next_idle_tick_ =
-            animation_tick_ + 45 + (NextRandom() % 75);
+        if ((NextRandom() % 5) < 2) {
+            target_look_x_ = 0;
+            target_look_y_ = 0;
+        } else {
+            target_look_x_ =
+                static_cast<int>(
+                    NextRandom() % (max_look_x * 2 + 1)) -
+                max_look_x;
+            target_look_y_ =
+                static_cast<int>(
+                    NextRandom() % (max_look_y * 2 + 1)) -
+                max_look_y;
+        }
+        next_idle_tick_ = tick + 35 + (NextRandom() % 80);
     }
 
     if (face_mode_ == FaceMode::kListening) {
+        // Melirik naik-turun pelan, seolah menyimak.
         target_look_x_ = 0;
-        target_look_y_ =
-            ((animation_tick_ / 8) % 2 == 0) ? -2 : 1;
+        target_look_y_ = SinWave(tick, 48) * 2 / 127 - 1;
     } else if (face_mode_ == FaceMode::kThinking) {
-        target_look_x_ = max_look_x;
+        // Mata menyapu kiri-kanan di atas, seperti sedang berpikir.
+        target_look_x_ =
+            ((tick / 36) % 2 == 0) ? max_look_x : -max_look_x;
         target_look_y_ = -max_look_y;
     } else if (face_mode_ == FaceMode::kAngry) {
         target_look_x_ = 0;
@@ -489,41 +548,55 @@ void PocketOledDisplay::UpdateAnimationFrame() {
         target_look_y_ = 0;
     } else if (face_mode_ == FaceMode::kSad) {
         target_look_x_ = 0;
-        target_look_y_ = 2;
+        target_look_y_ = 3;
     } else if (face_mode_ == FaceMode::kSleepy) {
         target_look_x_ = 0;
         target_look_y_ = 0;
     }
 
-    current_look_x_ = Ease(current_look_x_, target_look_x_);
-    current_look_y_ = Ease(current_look_y_, target_look_y_);
+    look_x_q_ = EaseQ(look_x_q_, target_look_x_ * kQ, 4);
+    look_y_q_ = EaseQ(look_y_q_, target_look_y_ * kQ, 4);
 
-    int target_height = eye_height;
+    // Tinggi mata (Q4) beserta gerak "bernapas" yang sangat halus.
+    int target_height_q = eye_height * kQ;
     if (blink) {
-        target_height = 2;
+        target_height_q = 2 * kQ;
     } else if (face_mode_ == FaceMode::kSleepy) {
-        target_height = 7;
+        target_height_q = 7 * kQ + SinWave(tick, 60) * 8 / 127;
     } else if (face_mode_ == FaceMode::kAngry) {
-        target_height = kAngryEyeHeight;
+        target_height_q = kAngryEyeHeight * kQ;
     } else if (face_mode_ == FaceMode::kSad) {
-        target_height = kSadEyeHeight;
+        target_height_q = kSadEyeHeight * kQ;
     } else if (face_mode_ == FaceMode::kListening) {
-        target_height = eye_height + 3;
+        target_height_q =
+            (eye_height + 3) * kQ + SinWave(tick, 24) * kQ / 127;
+    } else if (face_mode_ == FaceMode::kSpeaking) {
+        target_height_q =
+            eye_height * kQ + SinWave(tick, 10) * (2 * kQ) / 127;
+    } else {
+        target_height_q =
+            eye_height * kQ + SinWave(tick, 100) * (kQ / 2) / 127;
     }
 
-    current_eye_height_ = Ease(current_eye_height_, target_height);
+    eye_height_q_ = EaseQ(eye_height_q_, target_height_q, blink ? 2 : 3);
+    const int eye_h = std::max(2, RoundQ(eye_height_q_));
 
-    int animation_x = 0;
-    int animation_y = 0;
+    // Gerak tambahan: memantul saat senang, goyang halus saat bicara,
+    // gemetar kecil saat marah.
+    int bob_y_q = 0;
+    int shake_x_q = 0;
     if (face_mode_ == FaceMode::kSpeaking) {
-        animation_y =
-            ((animation_tick_ / 3) % 2 == 0) ? -1 : 1;
+        bob_y_q = SinWave(tick, 14) * kQ / 127;
+    } else if (face_mode_ == FaceMode::kHappy) {
+        bob_y_q = -(std::abs(SinWave(tick, 16)) * 2 * kQ) / 127;
+    } else if (face_mode_ == FaceMode::kAngry) {
+        shake_x_q = ((tick / 2) % 2 == 0) ? 0 : kQ;
     } else if (face_mode_ == FaceMode::kThinking) {
-        animation_x =
-            ((animation_tick_ / 4) % 2 == 0) ? -1 : 1;
+        shake_x_q = SinWave(tick, 16) * kQ / 127;
     }
 
-    const int left_x = base_x + current_look_x_ + animation_x;
+    const int left_x =
+        base_x + RoundQ(look_x_q_ + shake_x_q);
     const int right_x = left_x + eye_width + eye_gap;
 
     const int sleepy_offset =
@@ -533,15 +606,14 @@ void PocketOledDisplay::UpdateAnimationFrame() {
 
     const int eye_y =
         base_y +
-        (eye_height - current_eye_height_) / 2 +
-        current_look_y_ +
-        animation_y +
+        (eye_height - eye_h) / 2 +
+        RoundQ(look_y_q_ + bob_y_q) +
         sleepy_offset;
 
     lv_obj_set_pos(left_eye_, left_x, eye_y);
-    lv_obj_set_size(left_eye_, eye_width, current_eye_height_);
+    lv_obj_set_size(left_eye_, eye_width, eye_h);
     lv_obj_set_pos(right_eye_, right_x, eye_y);
-    lv_obj_set_size(right_eye_, eye_width, current_eye_height_);
+    lv_obj_set_size(right_eye_, eye_width, eye_h);
 
     for (auto* lid : {
              left_top_lid_,
@@ -550,22 +622,27 @@ void PocketOledDisplay::UpdateAnimationFrame() {
              right_bottom_lid_}) {
         lv_obj_add_flag(lid, LV_OBJ_FLAG_HIDDEN);
     }
-    HideStrips(g_left_strips);
-    HideStrips(g_right_strips);
 
     // ANGRY: sisi atas miring turun ke arah tengah (alis marah).
     // SAD  : sisi atas miring naik ke arah tengah (alis sedih).
-    // Bawah mata tetap membulat. Tanpa rotation.
-    if (!blink &&
-        (face_mode_ == FaceMode::kAngry ||
-         face_mode_ == FaceMode::kSad)) {
-        const bool angry = face_mode_ == FaceMode::kAngry;
+    // Kemiringan tumbuh dan menyusut perlahan saat ekspresi berganti.
+    const bool slanted_mode =
+        face_mode_ == FaceMode::kAngry ||
+        face_mode_ == FaceMode::kSad;
 
-        // eye_y = tepi atas sisi tertinggi, bawah = eye_y + tinggi.
+    if (slanted_mode) {
+        brow_angry_ = face_mode_ == FaceMode::kAngry;
+    }
+
+    brow_q_ = EaseQ(brow_q_, slanted_mode ? kSlantDrop * kQ : 0, 3);
+    const int drop = std::min(kSlantDrop, RoundQ(brow_q_));
+    const bool show_brow = !blink && (slanted_mode || drop > 0);
+
+    if (show_brow) {
         // Badan mata dinaikkan agar sudut atas yang membulat
-        // tertutup garis miring.
+        // tertutup alis miring.
         const int body_y = eye_y - kSlantBodyExtra;
-        const int body_h = current_eye_height_ + kSlantBodyExtra;
+        const int body_h = eye_h + kSlantBodyExtra;
 
         lv_obj_set_pos(left_eye_, left_x, body_y);
         lv_obj_set_size(left_eye_, eye_width, body_h);
@@ -574,8 +651,25 @@ void PocketOledDisplay::UpdateAnimationFrame() {
 
         // Angry: sisi luar tinggi (mata kiri = sisi kiri tinggi).
         // Sad  : sisi dalam tinggi (mata kiri = sisi kanan tinggi).
-        ApplySlant(g_left_strips, left_x, eye_width, eye_y, angry);
-        ApplySlant(g_right_strips, right_x, eye_width, eye_y, !angry);
+        g_left_brow.drop = drop;
+        g_left_brow.left_high = brow_angry_;
+        g_right_brow.drop = drop;
+        g_right_brow.left_high = !brow_angry_;
+
+        const int cover_h = kSlantBodyExtra + drop;
+
+        lv_obj_set_pos(left_brow_cover_, left_x, body_y);
+        lv_obj_set_size(left_brow_cover_, eye_width, cover_h);
+        lv_obj_set_pos(right_brow_cover_, right_x, body_y);
+        lv_obj_set_size(right_brow_cover_, eye_width, cover_h);
+
+        lv_obj_remove_flag(left_brow_cover_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(right_brow_cover_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_invalidate(left_brow_cover_);
+        lv_obj_invalidate(right_brow_cover_);
+    } else {
+        lv_obj_add_flag(left_brow_cover_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(right_brow_cover_, LV_OBJ_FLAG_HIDDEN);
     }
 
     // Ekspresi Happy dan Speaking tetap dipertahankan.
@@ -590,14 +684,14 @@ void PocketOledDisplay::UpdateAnimationFrame() {
         lv_obj_set_pos(
             left_bottom_lid_,
             left_x - 2,
-            eye_y + current_eye_height_ - cover_height / 2);
+            eye_y + eye_h - cover_height / 2);
         lv_obj_set_size(
             left_bottom_lid_, eye_width + 4, cover_height);
 
         lv_obj_set_pos(
             right_bottom_lid_,
             right_x - 2,
-            eye_y + current_eye_height_ - cover_height / 2);
+            eye_y + eye_h - cover_height / 2);
         lv_obj_set_size(
             right_bottom_lid_, eye_width + 4, cover_height);
     }
@@ -631,10 +725,14 @@ void PocketOledDisplay::SetMusicMode(bool enabled) {
         }
     }
 
-    // Potongan penutup selalu disembunyikan di sini;
+    // Penutup alis selalu disembunyikan di sini;
     // UpdateAnimationFrame menampilkannya lagi bila perlu.
-    HideStrips(g_left_strips);
-    HideStrips(g_right_strips);
+    if (left_brow_cover_ != nullptr) {
+        lv_obj_add_flag(left_brow_cover_, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (right_brow_cover_ != nullptr) {
+        lv_obj_add_flag(right_brow_cover_, LV_OBJ_FLAG_HIDDEN);
+    }
 
     for (auto* bar : music_bars_) {
         if (bar == nullptr) {
@@ -648,6 +746,9 @@ void PocketOledDisplay::SetMusicMode(bool enabled) {
     }
 
     if (enabled) {
+        // Robot bergoyang sebentar saat lagu mulai; lagu sendiri baru terdengar
+        // beberapa detik kemudian setelah stream tersambung dan di-buffer.
+        PocketRobotSongStartWiggle();
         music_last_update_ = 0;
         for (int i = 0; i < kMusicBarCount; ++i) {
             music_heights_[i] = 5;
