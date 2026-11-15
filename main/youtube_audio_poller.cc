@@ -622,7 +622,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
             current_title_.clear();
         }
         Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
-        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+        esp_wifi_set_ps(WIFI_PS_NONE);  // dev: tanpa hemat daya WiFi
         app.SetDeviceState(kDeviceStateIdle);
         return;
     }
@@ -1151,7 +1151,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
         // 2. Cleanly restore device state to Idle/Standby
         app.SetDeviceState(kDeviceStateIdle);
         Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
-        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+        esp_wifi_set_ps(WIFI_PS_NONE);  // dev: tanpa hemat daya WiFi
         vTaskDelay(pdMS_TO_TICKS(100));
 
         // 3. Re-enable WakeWord detection in clean, unfragmented memory
