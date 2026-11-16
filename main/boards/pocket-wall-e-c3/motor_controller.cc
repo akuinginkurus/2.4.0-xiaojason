@@ -7,6 +7,7 @@
 #include <string>
 
 #include <esp_log.h>
+#include <esp_timer.h>
 
 #include "config.h"
 #include "mcp_server.h"
@@ -21,49 +22,70 @@ constexpr ledc_timer_bit_t kDutyResolution = LEDC_TIMER_10_BIT;
 constexpr uint32_t kMaxDuty = (1U << 10) - 1;
 
 // Gerakan singkat saat lagu mulai diputar.
+// Memakai esp_timer berantai (tanpa task baru) supaya tidak menambah memori
+// tepat ketika lagu mulai dan memori sedang paling sempit.
 MotorController* g_wiggle_motor = nullptr;
-std::atomic<bool> g_wiggle_running{false};
+esp_timer_handle_t g_wiggle_timer = nullptr;
+int g_wiggle_step = 0;
 
-void WiggleTask(void*) {
+struct WiggleStep {
+    int left_speed;
+    int right_speed;
+    uint32_t drive_ms;   // lama motor menyala
+    uint32_t next_ms;    // jeda sebelum langkah berikutnya
+};
+
+constexpr WiggleStep kWiggleSteps[] = {
+    {-100, 100, 200, 380},
+    {100, -100, 400, 580},
+    {-100, 100, 200, 380},
+};
+constexpr int kWiggleStepCount =
+    sizeof(kWiggleSteps) / sizeof(kWiggleSteps[0]);
+
+void WiggleTimerCallback(void*) {
     MotorController* motor = g_wiggle_motor;
-
-    if (motor != nullptr &&
-        !motor->IsMoving() &&
-        !motor->IsAutonomousMode()) {
-        motor->Drive(-100, 100, 200);
-        vTaskDelay(pdMS_TO_TICKS(380));
-        motor->Drive(100, -100, 400);
-        vTaskDelay(pdMS_TO_TICKS(580));
-        motor->Drive(-100, 100, 200);
-        vTaskDelay(pdMS_TO_TICKS(380));
-        motor->Stop(false);
+    if (motor == nullptr) {
+        return;
     }
 
-    g_wiggle_running.store(false);
-    vTaskDelete(nullptr);
+    if (g_wiggle_step >= kWiggleStepCount) {
+        motor->Stop(false);
+        return;
+    }
+
+    const WiggleStep& step = kWiggleSteps[g_wiggle_step++];
+    motor->Drive(step.left_speed, step.right_speed, step.drive_ms);
+    esp_timer_start_once(
+        g_wiggle_timer,
+        static_cast<uint64_t>(step.next_ms) * 1000ULL);
 }
 }
 
 // Dipanggil dari layar saat mode lagu dimulai.
 void PocketRobotSongStartWiggle() {
-    if (g_wiggle_motor == nullptr) {
+    if (g_wiggle_motor == nullptr ||
+        g_wiggle_motor->IsMoving() ||
+        g_wiggle_motor->IsAutonomousMode()) {
         return;
     }
 
-    bool expected = false;
-    if (!g_wiggle_running.compare_exchange_strong(expected, true)) {
+    if (g_wiggle_timer == nullptr) {
+        esp_timer_create_args_t args = {};
+        args.callback = WiggleTimerCallback;
+        args.name = "song_wiggle";
+        if (esp_timer_create(&args, &g_wiggle_timer) != ESP_OK) {
+            g_wiggle_timer = nullptr;
+            return;
+        }
+    }
+
+    if (esp_timer_is_active(g_wiggle_timer)) {
         return;
     }
 
-    if (xTaskCreate(
-            WiggleTask,
-            "song_wiggle",
-            3072,
-            nullptr,
-            3,
-            nullptr) != pdPASS) {
-        g_wiggle_running.store(false);
-    }
+    g_wiggle_step = 0;
+    esp_timer_start_once(g_wiggle_timer, 1000);
 }
 
 MotorController::MotorController(
