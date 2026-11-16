@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <string>
 #include <initializer_list>
 
@@ -100,6 +101,30 @@ bool Contains(const char* text, const char* value) {
     return text != nullptr &&
            value != nullptr &&
            std::strstr(text, value) != nullptr;
+}
+
+// True bila teks berbentuk jam "HH:MM" (dikirim sistem saat idle).
+bool IsClockText(const char* text) {
+    return text != nullptr &&
+           std::strlen(text) == 5 &&
+           std::isdigit(static_cast<unsigned char>(text[0])) &&
+           std::isdigit(static_cast<unsigned char>(text[1])) &&
+           text[2] == ':' &&
+           std::isdigit(static_cast<unsigned char>(text[3])) &&
+           std::isdigit(static_cast<unsigned char>(text[4]));
+}
+
+// Jam sekarang "HH:MM", atau teks kosong bila waktu belum tersinkron.
+std::string CurrentClockText() {
+    time_t now = time(nullptr);
+    struct tm info;
+    localtime_r(&now, &info);
+    if (info.tm_year < 2025 - 1900) {
+        return "";
+    }
+    char buffer[8];
+    strftime(buffer, sizeof(buffer), "%H:%M", &info);
+    return buffer;
 }
 
 // Gelombang sinus kasar: hasil -127..127, satu putaran = period tick.
@@ -312,6 +337,15 @@ void PocketOledDisplay::SetStatus(const char* status) {
         return;
     }
 
+    // Jam "HH:MM" dikirim sistem saat idle: tampilkan saja, tanpa teks lain.
+    if (IsClockText(status)) {
+        if (standby_mode_ && !music_mode_ && chat_line_ != nullptr) {
+            has_chat_text_ = false;
+            lv_label_set_text(chat_line_, status);
+        }
+        return;
+    }
+
     const bool is_standby =
         std::strcmp(status, Lang::Strings::STANDBY) == 0;
     standby_mode_ = is_standby;
@@ -343,6 +377,15 @@ void PocketOledDisplay::SetStatus(const char* status) {
         SetFaceMode(FaceMode::kThinking);
     } else if (is_standby) {
         SetFaceMode(FaceMode::kSleepy);
+    }
+
+    if (is_standby) {
+        // Saat idle tidak ada teks apa pun selain jam.
+        has_chat_text_ = false;
+        if (chat_line_ != nullptr) {
+            lv_label_set_text(chat_line_, CurrentClockText().c_str());
+        }
+        return;
     }
 
     if (!has_chat_text_ && chat_line_ != nullptr) {
@@ -388,6 +431,11 @@ void PocketOledDisplay::SetChatMessage(
     const char* role,
     const char* content) {
     DisplayLockGuard lock(this);
+
+    // Saat idle layar tidak menampilkan teks percakapan.
+    if (standby_mode_ && content != nullptr && content[0] != '\0') {
+        return;
+    }
 
     has_chat_text_ =
         content != nullptr && content[0] != '\0';
