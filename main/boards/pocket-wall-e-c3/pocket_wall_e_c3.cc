@@ -1,4 +1,3 @@
-
 #include "application.h"
 #include "audio/codecs/no_audio_codec.h"
 #include "button.h"
@@ -578,14 +577,6 @@ public:
         return display_;
     }
 
-
-    // Selama pengembangan (dicolok listrik terus): WiFi tidak pernah masuk mode
-    // hemat daya (modem sleep), supaya koneksi ke hotspot tetap stabil saat idle.
-    // Kembalikan ke bawaan (hapus fungsi ini) saat memakai baterai.
-    virtual void SetPowerSaveLevel(PowerSaveLevel level) override {
-        (void)level;
-        WifiBoard::SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
-    }
 
     bool GetBatteryLevel(
         int& level,
