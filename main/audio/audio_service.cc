@@ -173,7 +173,7 @@ void AudioService::Start() {
         AudioService* audio_service = (AudioService*)arg;
         audio_service->AudioOutputTask();
         vTaskDelete(NULL);
-    }, "audio_output", 2048, this, 4, &audio_output_task_handle_);
+    }, "audio_output", 3072, this, 4, &audio_output_task_handle_);
 #endif
 
     /* Start the opus codec task */
