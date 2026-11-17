@@ -25,7 +25,7 @@
         "CONNECTING": "Connecting...",
         "CONNECTION_SUCCESSFUL": "Connection Successful",
         "CONNECTED_TO": "Connected to ",
-        "LISTENING": "Listening...",
+        "LISTENING": "Menyimak...",
         "SPEAKING": "Speaking...",
         "SERVER_NOT_FOUND": "Looking for available service",
         "SERVER_NOT_CONNECTED": "Unable to connect to service, please try again later",
