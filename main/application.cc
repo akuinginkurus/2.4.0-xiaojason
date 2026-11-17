@@ -24,6 +24,17 @@
 
 namespace {
 
+// Teks perintah tool dari server (mis. "% self.get_device_status...",
+// "% self.wall_e.auto") tidak boleh tampil di layar.
+bool IsToolCommandText(const char* text) {
+    if (text == nullptr) return false;
+    while (*text == ' ' || *text == '\t' || *text == '\r' || *text == '\n') text++;
+    if (*text != '%') return false;
+    text++;
+    while (*text == ' ' || *text == '\t') text++;
+    return strncmp(text, "self.", 5) == 0;
+}
+
 constexpr int64_t kSongConfirmWindowUs = 20LL * 1000000LL;
 
 std::string ToLowerAscii(std::string text) {
@@ -700,6 +711,10 @@ void Application::InitializeProtocol() {
                         glyphs.clear();
                     }
                     ESP_LOGI(TAG, "<< %s", text->valuestring);
+                    if (IsToolCommandText(text->valuestring)) {
+                        // Perintah tool: jangan ditampilkan di layar.
+                        return;
+                    }
                     Schedule([display, message = std::string(text->valuestring),
                               glyphs = std::move(glyphs), bpp]() {
                         display->AddTextGlyphs(glyphs, bpp);
