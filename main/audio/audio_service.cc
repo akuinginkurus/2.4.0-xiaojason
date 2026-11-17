@@ -1,4 +1,6 @@
 #include "audio_service.h"
+#include <new>
+#include <memory>
 #include <esp_log.h>
 #include <esp_system.h>
 #include <cstring>
@@ -403,12 +405,14 @@ void AudioService::OpusCodecTask() {
             audio_queue_cv_.notify_all();
             lock.unlock();
 
-            auto task = std::make_unique<AudioTask>();
+            std::unique_ptr<AudioTask> task;
+            bool decoded = false;
+            try {
+            task = std::make_unique<AudioTask>();
             task->type = kAudioTaskTypeDecodeToPlaybackQueue;
             task->timestamp = packet->timestamp;
 
             SetDecodeSampleRate(packet->sample_rate, packet->frame_duration);
-            bool decoded = false;
             if (opus_decoder_ != nullptr) {
                 task->pcm.resize(decoder_frame_size_);
 
@@ -449,10 +453,19 @@ void AudioService::OpusCodecTask() {
             } else {
                 ESP_LOGE(TAG, "Audio decoder is not configured");
             }
+            } catch (const std::bad_alloc&) {
+                // RAM internal terfragmentasi: buang frame ini, jangan reboot.
+                decoded = false;
+                ESP_LOGW(TAG, "Out of memory while decoding, frame dropped");
+            }
 
             lock.lock();
             if (decoded && generation == playback_generation_ && !service_stopped_.load()) {
-                audio_playback_queue_.push_back(std::move(task));
+                try {
+                    audio_playback_queue_.push_back(std::move(task));
+                } catch (const std::bad_alloc&) {
+                    ESP_LOGW(TAG, "Out of memory queuing playback frame, dropped");
+                }
             }
             decode_in_flight_ = false;
             debug_statistics_.decode_count++;
@@ -473,6 +486,7 @@ void AudioService::OpusCodecTask() {
             audio_queue_cv_.notify_all();
             lock.unlock();
 
+            try {
             auto packet = std::make_unique<AudioStreamPacket>();
             packet->frame_duration = OPUS_FRAME_DURATION_MS;
             packet->sample_rate = 16000;
@@ -518,6 +532,10 @@ void AudioService::OpusCodecTask() {
             } else {
                 ESP_LOGE(TAG, "Failed to encode audio: encoder not configured or invalid frame size (got %u, expected %u)",
                          task->pcm.size(), encoder_frame_size_);
+            }
+            } catch (const std::bad_alloc&) {
+                // Buang frame mic ini; paket realtime yang telat tidak berguna.
+                ESP_LOGW(TAG, "Out of memory while encoding, frame dropped");
             }
             lock.lock();
         }
