@@ -1,6 +1,7 @@
 #include "no_audio_codec.h"
 
 #include <esp_log.h>
+#include <new>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -224,7 +225,15 @@ NoAudioCodecSimplex::NoAudioCodecSimplex(int input_sample_rate, int output_sampl
 
 int NoAudioCodec::Write(const int16_t* data, int samples) {
     std::lock_guard<std::mutex> lock(data_if_mutex_);
-    std::vector<int32_t> buffer(samples);
+    try {
+        if (write_buffer_.size() < static_cast<size_t>(samples)) {
+            write_buffer_.resize(samples);
+        }
+    } catch (const std::bad_alloc&) {
+        ESP_LOGW(TAG, "Out of memory for output buffer, frame dropped");
+        return 0;
+    }
+    int32_t* buffer = write_buffer_.data();
 
     // output_volume_: 0-100
     // volume_factor_: 0-65536
@@ -249,8 +258,16 @@ int NoAudioCodec::Read(int16_t* dest, int samples) {
     size_t bytes_read;
     constexpr uint32_t kReadTimeoutMs = 200;
 
-    std::vector<int32_t> bit32_buffer(samples);
-    if (i2s_channel_read(rx_handle_, bit32_buffer.data(), samples * sizeof(int32_t), &bytes_read, kReadTimeoutMs) != ESP_OK) {
+    try {
+        if (read_buffer_.size() < static_cast<size_t>(samples)) {
+            read_buffer_.resize(samples);
+        }
+    } catch (const std::bad_alloc&) {
+        ESP_LOGW(TAG, "Out of memory for input buffer");
+        return 0;
+    }
+    int32_t* bit32_buffer = read_buffer_.data();
+    if (i2s_channel_read(rx_handle_, bit32_buffer, samples * sizeof(int32_t), &bytes_read, kReadTimeoutMs) != ESP_OK) {
         return 0;
     }
 
