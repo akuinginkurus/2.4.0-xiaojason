@@ -12,6 +12,7 @@
 #include <esp_debug_helpers.h>
 #include <esp_rom_sys.h>
 #include <exception>
+#include <new>
 #include <cstdlib>
 #include "application.h"
 
@@ -40,9 +41,27 @@ static void DiagTerminateHandler() {
     abort();
 }
 
+// Dipanggil operator new tepat saat alokasi gagal, sebelum bad_alloc dilempar.
+// Stack di sini masih memuat pemanggil alokasi; dibatasi 5 kali cetak agar
+// tidak membanjiri log.
+static void DiagNewHandler() {
+    static int printed = 0;
+    if (printed < 5) {
+        printed++;
+        esp_rom_printf("\n!!NEW_FAIL task=%s free_int=%u largest_int=%u min_int=%u\n",
+                       pcTaskGetName(nullptr),
+                       (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                       (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                       (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        esp_backtrace_print(16);
+    }
+    throw std::bad_alloc();
+}
+
 extern "C" void app_main(void)
 {
     std::set_terminate(DiagTerminateHandler);
+    std::set_new_handler(DiagNewHandler);
     // Initialize NVS flash for WiFi configuration
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
