@@ -27,10 +27,12 @@
 #include <esp_wifi.h>
 #include <cstdint>
 #include <climits>
+#include <new>
 #include <vector>
 
 #include "motor_controller.h"
 #include "joystick_espnow.h"
+#include "mpu6050_motion.h"
 
 #define TAG "PocketWallEC3"
 
@@ -210,6 +212,10 @@ private:
     int32_t log_raw_max_ = 0;
     int32_t log_peak_ = 0;
 
+    // Buffer baca dipakai ulang (dialokasikan sekali, bukan tiap frame),
+    // karena RAM internal C3 mudah terfragmentasi.
+    std::vector<int32_t> raw_buffer_;
+
 public:
     PocketAudioCodec(int sample_rate,
                      gpio_num_t bclk,
@@ -236,13 +242,22 @@ public:
 
 protected:
     int Read(int16_t* dest, int samples) override {
-        std::vector<int32_t> raw(samples);
+        try {
+            if (raw_buffer_.size() < static_cast<size_t>(samples)) {
+                raw_buffer_.resize(samples);
+            }
+        } catch (const std::bad_alloc&) {
+            ESP_LOGW(TAG, "Out of memory for mic buffer");
+            return 0;
+        }
+
+        int32_t* raw = raw_buffer_.data();
         size_t bytes_read = 0;
 
         if (i2s_channel_read(
                 rx_handle_,
-                raw.data(),
-                raw.size() * sizeof(int32_t),
+                raw,
+                static_cast<size_t>(samples) * sizeof(int32_t),
                 &bytes_read,
                 200) != ESP_OK) {
             return 0;
@@ -251,7 +266,8 @@ protected:
         const int count =
             static_cast<int>(bytes_read / sizeof(int32_t));
 
-        std::vector<int32_t> filtered(count);
+        // Hasil filter ditulis kembali ke raw[i] (sampel i sudah dipakai
+        // sebelum ditimpa), jadi tidak perlu vektor kedua.
         int32_t peak = 1;
 
         for (int i = 0; i < count; ++i) {
@@ -268,7 +284,7 @@ protected:
 
             previous_input_ = input;
             previous_output_ = high_pass;
-            filtered[i] = high_pass;
+            raw[i] = high_pass;
 
             const int32_t magnitude =
                 high_pass < 0 ? -high_pass : high_pass;
@@ -313,7 +329,7 @@ protected:
         for (int i = 0; i < count; ++i) {
             const int32_t amplified =
                 static_cast<int32_t>(
-                    (static_cast<int64_t>(filtered[i]) *
+                    (static_cast<int64_t>(raw[i]) *
                      gain_q12_) >> 12);
 
             if (amplified > INT16_MAX) {
@@ -363,6 +379,21 @@ public:
 
 
 // ============================================================
+// Sensor gerak (MPU6050): diangkat / digoyang -> wajah marah
+// ============================================================
+
+static Mpu6050Motion* g_pocket_motion = nullptr;
+
+// Dipanggil dari pocket_oled_display.cc saat robot sendiri bergerak
+// (mis. goyangan awal lagu) agar tidak dikira diangkat / digoyang.
+void PocketMotionSuppress(uint32_t ms) {
+    if (g_pocket_motion != nullptr) {
+        g_pocket_motion->SuppressFor(ms);
+    }
+}
+
+
+// ============================================================
 // Pocket Wall-E C3 board
 // ============================================================
 
@@ -378,6 +409,7 @@ private:
 
     MotorController* motor_controller_ = nullptr;
     JoystickEspNow* joystick_espnow_ = nullptr;
+    Mpu6050Motion* motion_ = nullptr;
 
 
     void InitializeDisplayI2c() {
@@ -534,6 +566,11 @@ public:
         InitializeDisplay();
         InitializeButton();
         InitializeWifiWatchdog();
+
+        // MPU6050 di bus I2C yang sama dengan OLED (alamat 0x68).
+        // Bila sensor tidak terpasang, konstruktor hanya mencatat peringatan.
+        motion_ = new Mpu6050Motion(display_i2c_bus_);
+        g_pocket_motion = motion_;
 
         motor_controller_ = new MotorController(
             MOTOR_LEFT_IN1_PIN,
