@@ -18,7 +18,8 @@
 #include <esp_timer.h>
 
 // Didefinisikan di pocket_oled_display.cc.
-extern void PocketOledRequestAngry(uint32_t hold_ms);
+// kind: 1 = diangkat, 2 = digoyang (menentukan teks di layar).
+extern void PocketOledRequestAngry(uint32_t hold_ms, int kind);
 
 class Mpu6050Motion {
 public:
@@ -87,6 +88,13 @@ public:
         probe_ = probe;
     }
 
+    // Dipanggil sekali tiap kali "diangkat" / "digoyang" terdeteksi
+    // (kind 1 = diangkat, 2 = digoyang), dari task esp_timer.
+    void SetReactCallback(void (*callback)(int kind, void* context), void* context) {
+        react_ctx_ = context;
+        react_ = callback;
+    }
+
     // Abaikan gerakan selama ms milidetik (mis. saat robot sendiri bergerak).
     void SuppressFor(uint32_t ms) {
         suppress_until_ms_.store(NowMs() + static_cast<int64_t>(ms));
@@ -119,6 +127,8 @@ private:
 
     bool (*probe_)(void*) = nullptr;
     void* probe_ctx_ = nullptr;
+    void (*react_)(int, void*) = nullptr;
+    void* react_ctx_ = nullptr;
     static constexpr int64_t kMotorSuppressMs = 1500;  // sisa getaran setelah motor berhenti
 
     bool has_prev_ = false;
@@ -181,10 +191,13 @@ private:
         lifted_ = false;
     }
 
-    void Trigger(const char* reason, uint32_t hold_ms, int64_t now) {
+    void Trigger(const char* reason, uint32_t hold_ms, int kind, int64_t now) {
         ESP_LOGI(kTag, "Terdeteksi: %s -> marah", reason);
-        PocketOledRequestAngry(hold_ms);
+        PocketOledRequestAngry(hold_ms, kind);
         last_request_ms_ = now;
+        if (react_ != nullptr) {
+            react_(kind, react_ctx_);
+        }
     }
 
     void Poll() {
@@ -238,7 +251,7 @@ private:
                 jerk_count_ = 0;
             }
             if (++jerk_count_ >= kShakeJerkCount) {
-                Trigger("digoyang", kAngryHoldShakeMs, now);
+                Trigger("digoyang", kAngryHoldShakeMs, 2, now);
                 jerk_count_ = 0;
                 lifted_ = true;  // jangan memicu "diangkat" lagi untuk gerakan yang sama
             }
@@ -280,10 +293,10 @@ private:
         if (moving_samples_ >= kLiftConfirmSamples) {
             if (!lifted_) {
                 lifted_ = true;
-                Trigger("diangkat", kAngryHoldLiftMs, now);
+                Trigger("diangkat", kAngryHoldLiftMs, 1, now);
             } else if (!calm && now - last_request_ms_ > 1000) {
                 // Masih dibawa-bawa: perpanjang marah.
-                PocketOledRequestAngry(kAngryHoldLiftMs / 2);
+                PocketOledRequestAngry(kAngryHoldLiftMs / 2, 1);
                 last_request_ms_ = now;
             }
         }
