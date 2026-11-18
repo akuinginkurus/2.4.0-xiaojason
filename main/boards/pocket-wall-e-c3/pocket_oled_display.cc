@@ -48,6 +48,8 @@ bool g_from_emotion = false;
 // Permintaan wajah marah dari sensor gerak (task lain). Diisi lewat
 // PocketOledRequestAngry() tanpa mengunci LVGL; dibaca oleh timer animasi.
 std::atomic<uint32_t> g_angry_request_ms{0};
+std::atomic<int> g_angry_kind{1};
+bool g_angry_text_active = false;  // teks protes sedang tampil di chat_line_
 
 bool HoldActive() {
     return g_hold_active &&
@@ -224,7 +226,8 @@ void BrowCoverDrawCb(lv_event_t* e) {
 
 // Dipanggil dari task sensor gerak (MPU6050). Hanya mengisi variabel atomik;
 // wajah marah diterapkan oleh timer animasi di UpdateAnimationFrame().
-void PocketOledRequestAngry(uint32_t hold_ms) {
+void PocketOledRequestAngry(uint32_t hold_ms, int kind) {
+    g_angry_kind.store(kind);
     g_angry_request_ms.store(hold_ms == 0 ? 1 : hold_ms);
 }
 
@@ -538,6 +541,15 @@ void PocketOledDisplay::UpdateAnimationFrame() {
         face_mode_ = FaceMode::kAngry;
         target_look_x_ = 0;
         target_look_y_ = 0;
+
+        // Protes di layar: 1 = diangkat, 2 = digoyang.
+        if (chat_line_ != nullptr) {
+            lv_label_set_text(
+                chat_line_,
+                g_angry_kind.load() == 2 ? "Aduh, pusing!" : "Turunkan aku!");
+            g_angry_text_active = true;
+            has_chat_text_ = true;
+        }
     }
 
     if (music_mode_) {
@@ -549,6 +561,17 @@ void PocketOledDisplay::UpdateAnimationFrame() {
         g_hold_active = false;
         face_mode_ =
             standby_mode_ ? FaceMode::kSleepy : FaceMode::kNeutral;
+
+        // Hapus teks protes; saat idle kembalikan jam.
+        if (g_angry_text_active) {
+            g_angry_text_active = false;
+            has_chat_text_ = false;
+            if (chat_line_ != nullptr) {
+                lv_label_set_text(
+                    chat_line_,
+                    standby_mode_ ? CurrentClockText().c_str() : "");
+            }
+        }
     }
 
     if (kFaceDemo && animation_tick_ < 300) {
