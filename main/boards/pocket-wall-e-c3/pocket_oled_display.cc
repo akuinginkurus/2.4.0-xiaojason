@@ -3,6 +3,7 @@
 #include "assets/lang_config.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
@@ -13,6 +14,10 @@
 
 // Didefinisikan di motor_controller.cc: gerakkan robot sebentar saat lagu mulai.
 extern void PocketRobotSongStartWiggle();
+
+// Didefinisikan di pocket_wall_e_c3.cc: abaikan sensor gerak sementara
+// (supaya gerakan robot sendiri tidak dikira diangkat/digoyang).
+extern void PocketMotionSuppress(uint32_t ms);
 
 namespace {
 
@@ -39,6 +44,10 @@ constexpr uint32_t kEmotionHoldMs = 12000;
 uint32_t g_hold_until = 0;
 bool g_hold_active = false;
 bool g_from_emotion = false;
+
+// Permintaan wajah marah dari sensor gerak (task lain). Diisi lewat
+// PocketOledRequestAngry() tanpa mengunci LVGL; dibaca oleh timer animasi.
+std::atomic<uint32_t> g_angry_request_ms{0};
 
 bool HoldActive() {
     return g_hold_active &&
@@ -212,6 +221,12 @@ void BrowCoverDrawCb(lv_event_t* e) {
 }
 
 } // namespace
+
+// Dipanggil dari task sensor gerak (MPU6050). Hanya mengisi variabel atomik;
+// wajah marah diterapkan oleh timer animasi di UpdateAnimationFrame().
+void PocketOledRequestAngry(uint32_t hold_ms) {
+    g_angry_request_ms.store(hold_ms == 0 ? 1 : hold_ms);
+}
 
 PocketOledDisplay::PocketOledDisplay(
     esp_lcd_panel_io_handle_t panel_io,
@@ -514,6 +529,17 @@ void PocketOledDisplay::UpdateAnimationFrame() {
 
     ++animation_tick_;
 
+    // Permintaan wajah marah dari sensor gerak (diangkat / digoyang).
+    // Diabaikan saat mode musik agar visualizer tidak terganggu.
+    const uint32_t angry_request_ms = g_angry_request_ms.exchange(0);
+    if (angry_request_ms != 0 && !music_mode_) {
+        g_hold_active = true;
+        g_hold_until = lv_tick_get() + angry_request_ms;
+        face_mode_ = FaceMode::kAngry;
+        target_look_x_ = 0;
+        target_look_y_ = 0;
+    }
+
     if (music_mode_) {
         UpdateMusicVisualizer();
         return;
@@ -796,6 +822,9 @@ void PocketOledDisplay::SetMusicMode(bool enabled) {
     if (enabled) {
         // Robot bergoyang sebentar saat lagu mulai; lagu sendiri baru terdengar
         // beberapa detik kemudian setelah stream tersambung dan di-buffer.
+        // Sensor gerak diabaikan sementara agar goyangan ini tidak dikira
+        // robot diangkat / digoyang.
+        PocketMotionSuppress(6000);
         PocketRobotSongStartWiggle();
         music_last_update_ = 0;
         for (int i = 0; i < kMusicBarCount; ++i) {
