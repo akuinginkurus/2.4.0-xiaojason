@@ -51,6 +51,39 @@ std::atomic<uint32_t> g_angry_request_ms{0};
 std::atomic<int> g_angry_kind{1};
 bool g_angry_text_active = false;  // teks protes sedang tampil di chat_line_
 
+// Tidur bertahap saat idle (satuan tick animasi = 40 ms):
+//   0 .. kSleepSquintTick  : mata masih terbuka
+//   .. kSleepClosedTick    : mata menyipit
+//   .. kSleepZzzTick       : mata menutup
+//   >= kSleepZzzTick       : muncul "z Z Z" yang bergerak
+// Ubah angka ini untuk mempercepat / memperlambat.
+constexpr uint32_t kSleepSquintTick = 250;  // 10 detik
+constexpr uint32_t kSleepClosedTick = 500;  // 20 detik
+constexpr uint32_t kSleepZzzTick = 575;     // 23 detik
+constexpr uint32_t kZzzStepTicks = 14;      // ~0,56 detik per langkah
+
+uint32_t g_sleep_start_tick = 0;
+bool g_prev_sleepy = false;
+
+// Satu label "zzz" memakai teks statis (tanpa alokasi heap saat berganti).
+lv_obj_t* g_zzz_label = nullptr;
+bool g_zzz_visible = false;
+int g_zzz_step = -1;
+const char* const kZzzTexts[4] = {"z", "z z", "z Z", "z Z Z"};
+
+void SetZzzVisible(bool visible) {
+    if (g_zzz_label == nullptr || g_zzz_visible == visible) {
+        return;
+    }
+    g_zzz_visible = visible;
+    if (visible) {
+        g_zzz_step = -1;
+        lv_obj_remove_flag(g_zzz_label, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(g_zzz_label, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 bool HoldActive() {
     return g_hold_active &&
            static_cast<int32_t>(g_hold_until - lv_tick_get()) > 0;
@@ -258,6 +291,8 @@ PocketOledDisplay::~PocketOledDisplay() {
     // Penutup alis adalah anak face_layer_, ikut terhapus.
     left_brow_cover_ = nullptr;
     right_brow_cover_ = nullptr;
+    g_zzz_label = nullptr;
+    g_zzz_visible = false;
 }
 
 void PocketOledDisplay::SetupUI() {
@@ -323,6 +358,14 @@ void PocketOledDisplay::SetupUI() {
         right_brow_cover_, BrowCoverDrawCb, LV_EVENT_DRAW_MAIN, &g_right_brow);
     lv_obj_add_flag(left_brow_cover_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(right_brow_cover_, LV_OBJ_FLAG_HIDDEN);
+
+    // Label "zzz" untuk tidur nyenyak; tersembunyi sampai tahap akhir tidur.
+    g_zzz_label = lv_label_create(face_layer_);
+    lv_obj_set_style_text_color(g_zzz_label, lv_color_white(), 0);
+    lv_obj_set_pos(g_zzz_label, 86, 4);
+    lv_label_set_static_text(g_zzz_label, kZzzTexts[0]);
+    lv_obj_add_flag(g_zzz_label, LV_OBJ_FLAG_HIDDEN);
+    g_zzz_visible = false;
 
     chat_line_ = lv_label_create(screen);
     lv_obj_set_pos(chat_line_, 0, 48);
@@ -595,6 +638,14 @@ void PocketOledDisplay::UpdateAnimationFrame() {
 
     const uint32_t tick = animation_tick_;
 
+    // Hitung sudah berapa lama masuk mode tidur (idle).
+    const bool sleepy_now = face_mode_ == FaceMode::kSleepy;
+    if (sleepy_now && !g_prev_sleepy) {
+        g_sleep_start_tick = tick;
+    }
+    g_prev_sleepy = sleepy_now;
+    const uint32_t sleep_age = sleepy_now ? tick - g_sleep_start_tick : 0;
+
     // Kedip: kadang sekali, kadang dua kali berturut-turut.
     if (tick >= next_blink_tick_) {
         blink_until_tick_ = tick + 4;
@@ -659,7 +710,17 @@ void PocketOledDisplay::UpdateAnimationFrame() {
     if (blink) {
         target_height_q = 2 * kQ;
     } else if (face_mode_ == FaceMode::kSleepy) {
-        target_height_q = 7 * kQ + SinWave(tick, 60) * 8 / 127;
+        if (sleep_age < kSleepSquintTick) {
+            // Masih terjaga: mata terbuka, bernapas pelan.
+            target_height_q =
+                eye_height * kQ + SinWave(tick, 100) * (kQ / 2) / 127;
+        } else if (sleep_age < kSleepClosedTick) {
+            // Mengantuk: menyipit.
+            target_height_q = 16 * kQ + SinWave(tick, 60) * 8 / 127;
+        } else {
+            // Tertidur: mata menutup jadi garis tipis.
+            target_height_q = 3 * kQ;
+        }
     } else if (face_mode_ == FaceMode::kAngry) {
         target_height_q = kAngryEyeHeight * kQ;
     } else if (face_mode_ == FaceMode::kSad) {
@@ -696,9 +757,13 @@ void PocketOledDisplay::UpdateAnimationFrame() {
         base_x + RoundQ(look_x_q_ + shake_x_q);
     const int right_x = left_x + eye_width + eye_gap;
 
+    // Mata turun perlahan seiring menyipit / menutup.
     const int sleepy_offset =
         face_mode_ == FaceMode::kSleepy
-            ? kSleepyEyeOffsetY
+            ? std::clamp(
+                  (eye_height - eye_h) * kSleepyEyeOffsetY / (eye_height - 3),
+                  0,
+                  kSleepyEyeOffsetY)
             : 0;
 
     const int eye_y =
@@ -711,6 +776,19 @@ void PocketOledDisplay::UpdateAnimationFrame() {
     lv_obj_set_size(left_eye_, eye_width, eye_h);
     lv_obj_set_pos(right_eye_, right_x, eye_y);
     lv_obj_set_size(right_eye_, eye_width, eye_h);
+
+    // "zzz" hanya muncul di tahap akhir tidur.
+    const bool show_zzz = sleepy_now && sleep_age >= kSleepZzzTick;
+    SetZzzVisible(show_zzz);
+    if (show_zzz && g_zzz_label != nullptr) {
+        const int step =
+            static_cast<int>(((sleep_age - kSleepZzzTick) / kZzzStepTicks) % 4);
+        if (step != g_zzz_step) {
+            g_zzz_step = step;
+            lv_label_set_static_text(g_zzz_label, kZzzTexts[step]);
+            lv_obj_set_pos(g_zzz_label, 86, 6 - step * 2);
+        }
+    }
 
     for (auto* lid : {
              left_top_lid_,
@@ -800,6 +878,10 @@ void PocketOledDisplay::SetMusicMode(bool enabled) {
     }
 
     music_mode_ = enabled;
+
+    if (enabled) {
+        SetZzzVisible(false);
+    }
 
     if (face_layer_ == nullptr) {
         return;
