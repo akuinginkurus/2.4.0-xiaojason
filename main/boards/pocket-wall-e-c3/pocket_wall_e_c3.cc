@@ -1,4 +1,5 @@
 #include "application.h"
+#include "assets/lang_config.h"
 #include "audio/codecs/no_audio_codec.h"
 #include "button.h"
 #include "config.h"
@@ -377,6 +378,74 @@ public:
     }
 };
 
+// ============================================================
+// Reaksi marah: roda meronta (tanpa task baru, memakai esp_timer berantai
+// seperti goyangan awal lagu).
+// ============================================================
+
+struct TantrumStep {
+    int left_speed;
+    int right_speed;
+    uint32_t drive_ms;  // lama motor menyala
+    uint32_t next_ms;   // jeda sebelum langkah berikutnya
+};
+
+constexpr TantrumStep kTantrumSteps[] = {
+    {100, -100, 180, 300},
+    {-100, 100, 180, 300},
+    {100, -100, 180, 300},
+    {-100, 100, 180, 300},
+};
+constexpr int kTantrumStepCount =
+    sizeof(kTantrumSteps) / sizeof(kTantrumSteps[0]);
+
+MotorController* g_tantrum_motor = nullptr;
+esp_timer_handle_t g_tantrum_timer = nullptr;
+int g_tantrum_step = 0;
+
+void TantrumTimerCallback(void*) {
+    MotorController* motor = g_tantrum_motor;
+    if (motor == nullptr) {
+        return;
+    }
+
+    if (g_tantrum_step >= kTantrumStepCount) {
+        motor->Stop(false);
+        return;
+    }
+
+    const TantrumStep& step = kTantrumSteps[g_tantrum_step++];
+    motor->Drive(step.left_speed, step.right_speed, step.drive_ms);
+    esp_timer_start_once(
+        g_tantrum_timer,
+        static_cast<uint64_t>(step.next_ms) * 1000ULL);
+}
+
+void StartTantrum(MotorController* motor) {
+    if (motor == nullptr || motor->IsMoving() || motor->IsAutonomousMode()) {
+        return;
+    }
+
+    g_tantrum_motor = motor;
+
+    if (g_tantrum_timer == nullptr) {
+        esp_timer_create_args_t args = {};
+        args.callback = TantrumTimerCallback;
+        args.name = "tantrum";
+        if (esp_timer_create(&args, &g_tantrum_timer) != ESP_OK) {
+            g_tantrum_timer = nullptr;
+            return;
+        }
+    }
+
+    if (esp_timer_is_active(g_tantrum_timer)) {
+        return;
+    }
+
+    g_tantrum_step = 0;
+    esp_timer_start_once(g_tantrum_timer, 1000);
+}
+
 }  // namespace
 
 
@@ -561,6 +630,19 @@ private:
         }
     }
 
+    // Reaksi marah saat diangkat / digoyang: teriakan + roda meronta.
+    // Teks "Turunkan aku!" ditampilkan oleh layar. Hanya saat idle dan tidak
+    // sedang memutar lagu, supaya tidak memotong percakapan atau lagu.
+    void ReactAngry() {
+        auto& app = Application::GetInstance();
+        if (app.GetDeviceState() != kDeviceStateIdle ||
+            YouTubeAudioPoller::GetInstance().IsPlaying()) {
+            return;
+        }
+        app.PlaySound(Lang::Sounds::OGG_SCREAMING);
+        StartTantrum(motor_controller_);
+    }
+
     // Dijalankan di task utama (lewat Schedule), bukan di task sensor.
     //   Naik   : volume +10
     //   Turun  : volume -10
@@ -632,6 +714,18 @@ public:
                     return static_cast<MotorController*>(context)->IsMoving();
                 },
                 motor_controller_);
+        }
+
+        // Reaksi marah: bunyi + roda meronta (dijalankan di task utama).
+        if (motion_ != nullptr) {
+            motion_->SetReactCallback(
+                [](int, void* context) {
+                    auto* board = static_cast<PocketWallEC3Board*>(context);
+                    Application::GetInstance().Schedule([board]() {
+                        board->ReactAngry();
+                    });
+                },
+                this);
         }
 
         // PAJ7620U2 di bus I2C yang sama (alamat 0x73). Bila tidak terpasang,
