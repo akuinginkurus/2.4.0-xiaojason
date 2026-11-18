@@ -363,7 +363,7 @@ void PocketOledDisplay::SetupUI() {
     g_zzz_label = lv_label_create(face_layer_);
     lv_obj_set_style_text_color(g_zzz_label, lv_color_white(), 0);
     lv_obj_set_pos(g_zzz_label, 86, 4);
-    lv_label_set_static_text(g_zzz_label, kZzzTexts[0]);
+    lv_label_set_text_static(g_zzz_label, kZzzTexts[0]);
     lv_obj_add_flag(g_zzz_label, LV_OBJ_FLAG_HIDDEN);
     g_zzz_visible = false;
 
@@ -785,7 +785,7 @@ void PocketOledDisplay::UpdateAnimationFrame() {
             static_cast<int>(((sleep_age - kSleepZzzTick) / kZzzStepTicks) % 4);
         if (step != g_zzz_step) {
             g_zzz_step = step;
-            lv_label_set_static_text(g_zzz_label, kZzzTexts[step]);
+            lv_label_set_text_static(g_zzz_label, kZzzTexts[step]);
             lv_obj_set_pos(g_zzz_label, 86, 6 - step * 2);
         }
     }
