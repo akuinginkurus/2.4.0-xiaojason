@@ -28,11 +28,13 @@
 #include <cstdint>
 #include <climits>
 #include <new>
+#include <string>
 #include <vector>
 
 #include "motor_controller.h"
 #include "joystick_espnow.h"
 #include "mpu6050_motion.h"
+#include "paj7620_gesture.h"
 
 #define TAG "PocketWallEC3"
 
@@ -410,6 +412,7 @@ private:
     MotorController* motor_controller_ = nullptr;
     JoystickEspNow* joystick_espnow_ = nullptr;
     Mpu6050Motion* motion_ = nullptr;
+    Paj7620Gesture* gesture_ = nullptr;
 
 
     void InitializeDisplayI2c() {
@@ -558,6 +561,47 @@ private:
         }
     }
 
+    // Dijalankan di task utama (lewat Schedule), bukan di task sensor.
+    //   Naik   : volume +10
+    //   Turun  : volume -10
+    //   Kiri   : hentikan lagu yang sedang diputar
+    //   Lambai : mulai / berhenti ngobrol (sama seperti tombol)
+    void HandleGesture(PajGesture gesture) {
+        switch (gesture) {
+            case kPajGestureUp:
+            case kPajGestureDown: {
+                auto* codec = GetAudioCodec();
+                int volume = codec->output_volume() +
+                             (gesture == kPajGestureUp ? 10 : -10);
+                if (volume > 100) volume = 100;
+                if (volume < 0) volume = 0;
+                codec->SetOutputVolume(volume);
+                if (display_ != nullptr) {
+                    display_->ShowNotification(
+                        std::string("Volume ") + std::to_string(volume), 1500);
+                }
+                break;
+            }
+            case kPajGestureLeft: {
+                auto& player = YouTubeAudioPoller::GetInstance();
+                if (player.IsPlaying()) {
+                    ESP_LOGI(TAG, "Gesture: stopping YouTube playback");
+                    player.Abort();
+                }
+                break;
+            }
+            case kPajGestureWave: {
+                auto& app = Application::GetInstance();
+                if (app.GetDeviceState() != kDeviceStateStarting) {
+                    app.ToggleChatState();
+                }
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
 public:
     PocketWallEC3Board()
         : action_button_(ACTION_BUTTON_GPIO) {
@@ -580,6 +624,27 @@ public:
 
         joystick_espnow_ =
             new JoystickEspNow(motor_controller_);
+
+        // Abaikan sensor gerak selama motor berjalan.
+        if (motion_ != nullptr) {
+            motion_->SetMotionProbe(
+                [](void* context) {
+                    return static_cast<MotorController*>(context)->IsMoving();
+                },
+                motor_controller_);
+        }
+
+        // PAJ7620U2 di bus I2C yang sama (alamat 0x73). Bila tidak terpasang,
+        // konstruktor hanya mencatat peringatan.
+        gesture_ = new Paj7620Gesture(
+            display_i2c_bus_,
+            [](PajGesture gesture, void* context) {
+                auto* board = static_cast<PocketWallEC3Board*>(context);
+                Application::GetInstance().Schedule([board, gesture]() {
+                    board->HandleGesture(gesture);
+                });
+            },
+            this);
 
         ESP_LOGI(TAG, "Pocket Wall-E C3 initialized");
     }
