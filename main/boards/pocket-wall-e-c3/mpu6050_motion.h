@@ -79,6 +79,14 @@ public:
 
     bool ready() const { return ready_; }
 
+    // Pasang pemeriksa "robot sedang bergerak" (mis. MotorController::IsMoving).
+    // Selama motor jalan, sensor gerak diabaikan agar getaran motor tidak
+    // dikira diangkat / digoyang.
+    void SetMotionProbe(bool (*probe)(void*), void* context) {
+        probe_ctx_ = context;
+        probe_ = probe;
+    }
+
     // Abaikan gerakan selama ms milidetik (mis. saat robot sendiri bergerak).
     void SuppressFor(uint32_t ms) {
         suppress_until_ms_.store(NowMs() + static_cast<int64_t>(ms));
@@ -108,6 +116,10 @@ private:
     int fail_count_ = 0;
 
     std::atomic<int64_t> suppress_until_ms_{0};
+
+    bool (*probe_)(void*) = nullptr;
+    void* probe_ctx_ = nullptr;
+    static constexpr int64_t kMotorSuppressMs = 1500;  // sisa getaran setelah motor berhenti
 
     bool has_prev_ = false;
     int32_t px_ = 0, py_ = 0, pz_ = 0;
@@ -208,6 +220,10 @@ private:
         px_ = x;
         py_ = y;
         pz_ = z;
+
+        if (probe_ != nullptr && probe_(probe_ctx_)) {
+            suppress_until_ms_.store(now + kMotorSuppressMs);
+        }
 
         if (now < suppress_until_ms_.load()) {
             ResetBaseline(x, y, z, mag);
