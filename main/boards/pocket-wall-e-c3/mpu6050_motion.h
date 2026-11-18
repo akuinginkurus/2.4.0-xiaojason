@@ -115,8 +115,8 @@ private:
     static constexpr int32_t kCalmDeltaMg = 120;
     static constexpr int32_t kCalmDevMg = 120;
     static constexpr int64_t kStableAdoptMs = 2000;     // diam -> baseline baru
-    static constexpr uint32_t kAngryHoldLiftMs = 4000;
-    static constexpr uint32_t kAngryHoldShakeMs = 5000;
+    static constexpr uint32_t kAngryHoldLiftMs = 3000;
+    static constexpr uint32_t kAngryHoldShakeMs = 3000;
 
     i2c_master_dev_handle_t device_ = nullptr;
     esp_timer_handle_t timer_ = nullptr;
