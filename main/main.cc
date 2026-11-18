@@ -62,6 +62,25 @@ extern "C" void app_main(void)
 {
     std::set_terminate(DiagTerminateHandler);
     std::set_new_handler(DiagNewHandler);
+
+    // Catat penyebab reset terakhir (muncul di awal log setelah reboot).
+    // POWERON/BROWNOUT = masalah catu daya; PANIC = crash kode;
+    // INT_WDT/TASK_WDT/WDT = watchdog; SW = esp_restart().
+    const char* reset_name = "LAIN";
+    switch (esp_reset_reason()) {
+        case ESP_RST_POWERON: reset_name = "POWERON"; break;
+        case ESP_RST_SW: reset_name = "SW_RESTART"; break;
+        case ESP_RST_PANIC: reset_name = "PANIC"; break;
+        case ESP_RST_INT_WDT: reset_name = "INT_WDT"; break;
+        case ESP_RST_TASK_WDT: reset_name = "TASK_WDT"; break;
+        case ESP_RST_WDT: reset_name = "WDT"; break;
+        case ESP_RST_BROWNOUT: reset_name = "BROWNOUT"; break;
+        case ESP_RST_USB: reset_name = "USB"; break;
+        case ESP_RST_JTAG: reset_name = "JTAG"; break;
+        case ESP_RST_EFUSE: reset_name = "EFUSE"; break;
+        default: break;
+    }
+    esp_rom_printf("\n!!RESET_REASON %s (%d)\n", reset_name, (int)esp_reset_reason());
     // Initialize NVS flash for WiFi configuration
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
