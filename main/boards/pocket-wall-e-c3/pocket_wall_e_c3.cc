@@ -446,6 +446,34 @@ void StartTantrum(MotorController* motor) {
     esp_timer_start_once(g_tantrum_timer, 1000);
 }
 
+// Setelah marah selesai (teriakan + roda), otomatis masuk mode mendengarkan,
+// seperti menekan tombol. Satu esp_timer sekali jalan, tanpa task baru.
+constexpr uint32_t kListenAfterAngryMs = 3200;
+esp_timer_handle_t g_listen_timer = nullptr;
+
+void ListenTimerCallback(void*) {
+    Application::GetInstance().Schedule([]() {
+        auto& app = Application::GetInstance();
+        if (app.GetDeviceState() == kDeviceStateIdle) {
+            app.ToggleChatState();
+        }
+    });
+}
+
+void StartListenAfter(uint32_t delay_ms) {
+    if (g_listen_timer == nullptr) {
+        esp_timer_create_args_t args = {};
+        args.callback = ListenTimerCallback;
+        args.name = "listen_after_angry";
+        if (esp_timer_create(&args, &g_listen_timer) != ESP_OK) {
+            g_listen_timer = nullptr;
+            return;
+        }
+    }
+    esp_timer_stop(g_listen_timer);  // mulai ulang bila sedang berjalan
+    esp_timer_start_once(g_listen_timer, static_cast<uint64_t>(delay_ms) * 1000ULL);
+}
+
 }  // namespace
 
 
@@ -630,7 +658,8 @@ private:
         }
     }
 
-    // Reaksi marah saat diangkat / digoyang: teriakan + roda meronta.
+    // Reaksi marah saat diangkat / digoyang: teriakan + roda meronta, lalu
+    // otomatis masuk mode mendengarkan (seperti menekan tombol).
     // Teks "Turunkan aku!" ditampilkan oleh layar. Hanya saat idle dan tidak
     // sedang memutar lagu, supaya tidak memotong percakapan atau lagu.
     void ReactAngry() {
@@ -641,6 +670,7 @@ private:
         }
         app.PlaySound(Lang::Sounds::OGG_SCREAMING);
         StartTantrum(motor_controller_);
+        StartListenAfter(kListenAfterAngryMs);
     }
 
     // Dijalankan di task utama (lewat Schedule), bukan di task sensor.
