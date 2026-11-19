@@ -14,6 +14,7 @@
 #include <esp_rom_sys.h>
 #include <exception>
 #include <new>
+#include <cstdint>
 #include <cstdlib>
 #include "application.h"
 
@@ -42,21 +43,26 @@ static void DiagTerminateHandler() {
     abort();
 }
 
-// Dipanggil operator new tepat saat alokasi gagal, sebelum bad_alloc dilempar.
-// Stack di sini masih memuat pemanggil alokasi; dibatasi 5 kali cetak agar
-// tidak membanjiri log.
-static void DiagNewHandler() {
-    static int printed = 0;
-    if (printed < 5) {
-        printed++;
-        esp_rom_printf("\n!!NEW_FAIL task=%s free_int=%u largest_int=%u min_int=%u\n",
-                       pcTaskGetName(nullptr),
-                       (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-                       (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-                       (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-        esp_backtrace_print(16);
+// Pengganti operator new global: bila alokasi gagal, cetak ukuran yang diminta
+// dan alamat pemanggilnya (resolve dengan addr2line + .elf) sebelum melempar
+// bad_alloc. Dibatasi 40 cetakan agar log tidak banjir.
+__attribute__((noinline)) void* operator new(std::size_t size) {
+    void* ptr = std::malloc(size == 0 ? 1 : size);
+    if (ptr == nullptr) {
+        static int printed = 0;
+        if (printed < 40) {
+            printed++;
+            esp_rom_printf(
+                "\n!!NEW_FAIL size=%u caller=0x%08x task=%s free_int=%u largest_int=%u\n",
+                (unsigned)size,
+                (unsigned)(uintptr_t)__builtin_return_address(0),
+                pcTaskGetName(nullptr),
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        }
+        throw std::bad_alloc();
     }
-    throw std::bad_alloc();
+    return ptr;
 }
 
 // POWERON/BROWNOUT = masalah catu daya; PANIC = crash kode;
@@ -83,7 +89,6 @@ static void PrintResetReason() {
 extern "C" void app_main(void)
 {
     std::set_terminate(DiagTerminateHandler);
-    std::set_new_handler(DiagNewHandler);
 
     // Catat penyebab reset terakhir. Dicetak saat boot dan diulang tiap 30 detik
     // selama 5 menit pertama, karena USB serial terputus saat reboot dan monitor
