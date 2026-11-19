@@ -18,6 +18,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cctype>
+#include <new>
 #include <vector>
 
 #define TAG "Application"
@@ -264,6 +265,10 @@ void Application::Run() {
     while (true) {
         auto bits = xEventGroupWaitBits(event_group_, ALL_EVENTS, pdTRUE, pdFALSE, portMAX_DELAY);
 
+        // RAM internal C3 sering sempit saat streaming. Kegagalan alokasi di
+        // handler event tidak boleh membuat perangkat reboot: catat lalu lanjut.
+        try {
+
         if (bits & MAIN_EVENT_ERROR) {
             SetDeviceState(kDeviceStateIdle);
             Alert(Lang::Strings::ERROR, last_error_message_.c_str(), "cancel",
@@ -369,6 +374,12 @@ void Application::Run() {
                 // SystemInfo::PrintTaskList();
                 // SystemInfo::PrintTaskCpuUsage(pdMS_TO_TICKS(1000));
             }
+        }
+
+        } catch (const std::bad_alloc&) {
+            ESP_LOGW(TAG, "Out of memory in main loop, event dropped (bits=0x%x)",
+                     static_cast<unsigned>(bits));
+            vTaskDelay(pdMS_TO_TICKS(50));
         }
     }
 }
@@ -1659,4 +1670,3 @@ void Application::HandleUserTextForSong(const std::string& message) {
         }
     }
 }
-
