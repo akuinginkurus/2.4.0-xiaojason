@@ -35,44 +35,14 @@ public:
     using Callback = void (*)(PajGesture gesture, void* context);
 
     Paj7620Gesture(i2c_master_bus_handle_t bus, Callback callback, void* context)
-        : callback_(callback), context_(context) {
-        if (bus == nullptr) {
+        : bus_(bus), callback_(callback), context_(context) {
+        if (bus_ == nullptr) {
             return;
         }
 
-        // Sensor tidur saat bus sepi dan sering melewatkan pesan pertama:
-        // probe dulu untuk membangunkannya.
-        i2c_master_probe(bus, kAddress, 50);
-        if (i2c_master_probe(bus, kAddress, 50) != ESP_OK) {
-            ESP_LOGW(kTag, "PAJ7620U2 tidak ditemukan di 0x%02X (cek kabel)", kAddress);
-            return;
-        }
-
-        i2c_device_config_t device_config = {};
-        device_config.dev_addr_length = I2C_ADDR_BIT_LEN_7;
-        device_config.device_address = kAddress;
-        device_config.scl_speed_hz = 400 * 1000;
-
-        if (i2c_master_bus_add_device(bus, &device_config, &device_) != ESP_OK) {
-            ESP_LOGW(kTag, "Gagal menambah perangkat PAJ7620U2 ke bus I2C");
-            device_ = nullptr;
-            return;
-        }
-
-        // Pilih bank 0 dua kali (sesuai library: pesan pertama sering hilang).
-        WriteReg(0xEF, 0x00);
-        WriteReg(0xEF, 0x00);
-
-        uint8_t id0 = 0, id1 = 0;
-        if (!ReadReg(0x00, &id0) || !ReadReg(0x01, &id1) || id0 != 0x20 || id1 != 0x76) {
-            ESP_LOGW(kTag, "ID sensor tidak cocok (0x%02X 0x%02X), bukan PAJ7620U2", id0, id1);
-            return;
-        }
-
-        WriteTable(kInitRegisters, sizeof(kInitRegisters) / sizeof(kInitRegisters[0]));
-        WriteTable(kGestureModeRegisters,
-                   sizeof(kGestureModeRegisters) / sizeof(kGestureModeRegisters[0]));
-        WriteReg(0xEF, 0x00);  // parkir di bank 0
+        // Percobaan pertama langsung di sini; bila gagal (sensor belum siap
+        // saat boot / kabel goyang) timer akan mencoba lagi tiap beberapa detik.
+        TryInit();
 
         esp_timer_create_args_t args = {};
         args.callback = &Paj7620Gesture::TimerCallback;
@@ -80,12 +50,10 @@ public:
         args.name = "paj7620";
         if (esp_timer_create(&args, &timer_) != ESP_OK) {
             ESP_LOGW(kTag, "Gagal membuat timer PAJ7620U2");
+            timer_ = nullptr;
             return;
         }
         esp_timer_start_periodic(timer_, static_cast<uint64_t>(kPollMs) * 1000);
-
-        ready_ = true;
-        ESP_LOGI(kTag, "PAJ7620U2 siap");
     }
 
     ~Paj7620Gesture() {
@@ -121,7 +89,12 @@ private:
     0x6E01, 0x7400, 0xEF00, 0x41FF, 0x4201,
     };
 
+    static constexpr int64_t kRetryMs = 3000;  // jeda antar percobaan init ulang
+
+    i2c_master_bus_handle_t bus_ = nullptr;
     i2c_master_dev_handle_t device_ = nullptr;
+    int init_attempts_ = 0;
+    int64_t last_try_ms_ = 0;
     esp_timer_handle_t timer_ = nullptr;
     Callback callback_ = nullptr;
     void* context_ = nullptr;
@@ -150,7 +123,69 @@ private:
         }
     }
 
+    // Inisialisasi sensor. Aman dipanggil berulang sampai berhasil.
+    bool TryInit() {
+        ++init_attempts_;
+        // Log peringatan hanya di percobaan pertama dan tiap 10 percobaan
+        // berikutnya agar log tidak penuh.
+        const bool verbose = init_attempts_ == 1 || init_attempts_ % 10 == 0;
+
+        if (device_ == nullptr) {
+            // Sensor tidur saat bus sepi dan sering melewatkan pesan pertama:
+            // probe dulu untuk membangunkannya.
+            i2c_master_probe(bus_, kAddress, 50);
+            if (i2c_master_probe(bus_, kAddress, 50) != ESP_OK) {
+                if (verbose) {
+                    ESP_LOGW(kTag, "PAJ7620U2 tidak ditemukan di 0x%02X (cek kabel), percobaan ke-%d",
+                             kAddress, init_attempts_);
+                }
+                return false;
+            }
+
+            i2c_device_config_t device_config = {};
+            device_config.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+            device_config.device_address = kAddress;
+            device_config.scl_speed_hz = 400 * 1000;
+
+            if (i2c_master_bus_add_device(bus_, &device_config, &device_) != ESP_OK) {
+                ESP_LOGW(kTag, "Gagal menambah perangkat PAJ7620U2 ke bus I2C");
+                device_ = nullptr;
+                return false;
+            }
+        }
+
+        // Pilih bank 0 dua kali (sesuai library: pesan pertama sering hilang).
+        WriteReg(0xEF, 0x00);
+        WriteReg(0xEF, 0x00);
+
+        uint8_t id0 = 0, id1 = 0;
+        if (!ReadReg(0x00, &id0) || !ReadReg(0x01, &id1) || id0 != 0x20 || id1 != 0x76) {
+            if (verbose) {
+                ESP_LOGW(kTag, "ID sensor tidak cocok (0x%02X 0x%02X), bukan PAJ7620U2", id0, id1);
+            }
+            return false;
+        }
+
+        WriteTable(kInitRegisters, sizeof(kInitRegisters) / sizeof(kInitRegisters[0]));
+        WriteTable(kGestureModeRegisters,
+                   sizeof(kGestureModeRegisters) / sizeof(kGestureModeRegisters[0]));
+        WriteReg(0xEF, 0x00);  // parkir di bank 0
+
+        ready_ = true;
+        ESP_LOGI(kTag, "PAJ7620U2 siap (percobaan ke-%d)", init_attempts_);
+        return true;
+    }
+
     void Poll() {
+        if (!ready_) {
+            const int64_t t = NowMs();
+            if (t - last_try_ms_ >= kRetryMs) {
+                last_try_ms_ = t;
+                TryInit();
+            }
+            return;
+        }
+
         uint8_t flags = 0;
         uint8_t wave = 0;
         if (!ReadReg(0x43, &flags)) {
