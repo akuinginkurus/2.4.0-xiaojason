@@ -33,6 +33,21 @@
 
 #define TAG "AudioService"
 
+namespace {
+
+// Buffer decode dipakai ulang tiap frame (hanya dipakai task opus_codec).
+std::vector<int16_t> g_decode_scratch;
+
+// Pool AudioTask bekas: task yang sudah selesai diputar dipakai lagi untuk
+// frame berikutnya, sehingga tidak ada alokasi ~3 KB per frame. RAM internal C3
+// terfragmentasi saat streaming; alokasi besar berulang itu yang gagal dan
+// membuat frame dibuang (suara patah-patah). Dilindungi audio_queue_mutex_.
+// Kapasitas vektor di-reserve saat Start() sehingga push_back tidak alokasi.
+std::vector<std::unique_ptr<AudioTask>> g_spare_tasks;
+constexpr size_t kMaxSpareTasks = 3;
+
+}  // namespace
+
 // ---------------------------------------------------------------------------
 // Music mode (YouTube streaming on ESP32-C3)
 // While a song is streaming, the wake word / audio engine (~30 KB of internal SRAM)
@@ -141,6 +156,12 @@ void AudioService::Initialize(AudioCodec* codec) {
 
 void AudioService::Start() {
     service_stopped_.store(false);
+    if (g_spare_tasks.capacity() < kMaxSpareTasks) {
+        try {
+            g_spare_tasks.reserve(kMaxSpareTasks);
+        } catch (const std::bad_alloc&) {
+        }
+    }
     xEventGroupClearBits(event_group_, AS_EVENT_AUDIO_TESTING_RUNNING | AS_EVENT_WAKE_WORD_RUNNING |
                                            AS_EVENT_AUDIO_PROCESSOR_RUNNING | AS_EVENT_AUDIO_INPUT_STOP_REQUEST);
 
@@ -373,6 +394,10 @@ void AudioService::AudioOutputTask() {
 #endif
         output_in_flight_ = false;
         notify_drained = MarkPlaybackDrainedLocked();
+        // Kembalikan task ke pool agar frame berikutnya tidak perlu alokasi.
+        if (task && g_spare_tasks.size() < g_spare_tasks.capacity()) {
+            g_spare_tasks.push_back(std::move(task));
+        }
         audio_queue_cv_.notify_all();
         lock.unlock();
 
@@ -408,13 +433,24 @@ void AudioService::OpusCodecTask() {
             std::unique_ptr<AudioTask> task;
             bool decoded = false;
             try {
-            task = std::make_unique<AudioTask>();
+            {
+                std::lock_guard<std::mutex> pool_lock(audio_queue_mutex_);
+                if (!g_spare_tasks.empty()) {
+                    task = std::move(g_spare_tasks.back());
+                    g_spare_tasks.pop_back();
+                }
+            }
+            if (!task) {
+                task = std::make_unique<AudioTask>();
+            }
             task->type = kAudioTaskTypeDecodeToPlaybackQueue;
             task->timestamp = packet->timestamp;
 
             SetDecodeSampleRate(packet->sample_rate, packet->frame_duration);
             if (opus_decoder_ != nullptr) {
-                task->pcm.resize(decoder_frame_size_);
+                if (g_decode_scratch.size() < static_cast<size_t>(decoder_frame_size_)) {
+                    g_decode_scratch.resize(decoder_frame_size_);
+                }
 
                 esp_audio_dec_in_raw_t raw = {
                     .buffer = (uint8_t *)(packet->payload.data()),
@@ -424,8 +460,8 @@ void AudioService::OpusCodecTask() {
                 };
 
                 esp_audio_dec_out_frame_t out_frame = {
-                    .buffer = (uint8_t *)(task->pcm.data()),
-                    .len = (uint32_t)(task->pcm.size() * sizeof(int16_t)),
+                    .buffer = (uint8_t *)(g_decode_scratch.data()),
+                    .len = (uint32_t)(decoder_frame_size_ * sizeof(int16_t)),
                     .decoded_size = 0,
                 };
 
@@ -435,16 +471,18 @@ void AudioService::OpusCodecTask() {
                 decoder_lock.unlock();
 
                 if (ret == ESP_AUDIO_ERR_OK) {
-                    task->pcm.resize(out_frame.decoded_size / sizeof(int16_t));
+                    const size_t decoded_samples = out_frame.decoded_size / sizeof(int16_t);
                     if (decoder_sample_rate_ != codec_->output_sample_rate() && output_resampler_ != nullptr) {
                         uint32_t target_size = 0;
-                        esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_, task->pcm.size(), &target_size);
-                        std::vector<int16_t> resampled(target_size);
+                        esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_, decoded_samples, &target_size);
+                        task->pcm.resize(target_size);  // task bekas: kapasitas dipakai ulang
                         uint32_t actual_output = target_size;
-                        esp_ae_rate_cvt_process(output_resampler_, (esp_ae_sample_t)task->pcm.data(), task->pcm.size(),
-                                                (esp_ae_sample_t)resampled.data(), &actual_output);
-                        resampled.resize(actual_output);
-                        task->pcm = std::move(resampled);
+                        esp_ae_rate_cvt_process(output_resampler_, (esp_ae_sample_t)g_decode_scratch.data(), decoded_samples,
+                                                (esp_ae_sample_t)task->pcm.data(), &actual_output);
+                        task->pcm.resize(actual_output);
+                    } else {
+                        task->pcm.assign(g_decode_scratch.begin(),
+                                         g_decode_scratch.begin() + decoded_samples);
                     }
                     decoded = true;
                 } else {
@@ -848,6 +886,11 @@ void AudioService::CheckAndUpdateAudioPowerState() {
         // ADC continuous start/stop must run in the same task. Wake the audio
         // input task instead of closing the codec from the esp_timer task.
         xEventGroupSetBits(event_group_, AS_EVENT_AUDIO_INPUT_STOP_REQUEST);
+    }
+    if (output_elapsed > AUDIO_POWER_TIMEOUT_MS) {
+        // Idle lama: lepaskan pool buffer agar RAM kembali untuk wake word dll.
+        std::lock_guard<std::mutex> pool_lock(audio_queue_mutex_);
+        g_spare_tasks.clear();
     }
     if (output_elapsed > AUDIO_POWER_TIMEOUT_MS && codec_->output_enabled()) {
         // Keep TX clock when duplex RX is active; otherwise RX may stall on some boards.
