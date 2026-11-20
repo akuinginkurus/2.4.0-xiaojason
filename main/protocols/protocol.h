@@ -58,6 +58,9 @@ public:
     virtual bool OpenAudioChannel() = 0;
     virtual void CloseAudioChannel(bool send_goodbye = true) = 0;
     virtual bool IsAudioChannelOpened() const = 0;
+    // Lepaskan koneksi server (mis. TLS MQTT) sementara untuk menghemat RAM.
+    // Koneksi dibuka lagi otomatis oleh OpenAudioChannel().
+    virtual void Suspend() {}
     virtual bool SendAudio(std::unique_ptr<AudioStreamPacket> packet) = 0;
     virtual void SendWakeWordDetected(const std::string& wake_word);
     virtual void SendStartListening(ListeningMode mode);
