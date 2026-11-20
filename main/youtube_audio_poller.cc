@@ -578,6 +578,7 @@ void YouTubeAudioPoller::StreamAudio(const std::string& video_id, const std::str
 
     // Close any open audio channel to the server so mic does not record speaker output or hit 30s listening timeout
     app.CloseAudioChannel();
+    app.SuspendCloudForMusic();  // lepas TLS MQTT selama lagu agar RAM tidak habis
     app.SetDeviceState(kDeviceStateIdle);
 
     // Clear any pending play/query requests that accumulated during TTS wait
