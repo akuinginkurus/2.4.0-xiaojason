@@ -378,6 +378,18 @@ void AudioService::AudioOutputTask() {
             esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
             codec_->EnableOutput(true);
         }
+        // Penghalus suara musik: low-pass satu kutub (fixed-point, tanpa float).
+        // Meredam desis/"tajam" dari Opus bitrate rendah. Hanya aktif saat mode musik.
+        // Ubah kMusicLpAlpha: makin kecil makin halus/redup (32768 = tanpa filter).
+        //   24000 ~ cutoff 5,2 kHz (tipis) | 18000 ~ 3 kHz (sedang) | 12000 ~ 1,9 kHz (kuat)
+        if (g_music_mode) {
+            constexpr int32_t kMusicLpAlpha = 18000;
+            static int32_t lp_state = 0;
+            for (auto& sample : task->pcm) {
+                lp_state += (((int32_t)sample - lp_state) * kMusicLpAlpha) >> 15;
+                sample = (int16_t)lp_state;
+            }
+        }
         codec_->OutputData(task->pcm);
 
         /* Update the last output time */
