@@ -18,6 +18,9 @@ MqttProtocol::MqttProtocol() {
         .callback =
             [](void* arg) {
                 MqttProtocol* protocol = (MqttProtocol*)arg;
+                if (protocol->suspended_) {
+                    return;
+                }
                 auto& app = Application::GetInstance();
                 if (app.GetDeviceState() == kDeviceStateIdle) {
                     ESP_LOGI(TAG, "Reconnecting to MQTT server");
@@ -95,6 +98,9 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
     mqtt_->SetKeepAlive(keepalive_interval);
 
     mqtt_->OnDisconnected([this]() {
+        if (suspended_) {
+            return;
+        }
         if (on_disconnected_ != nullptr) {
             on_disconnected_();
         }
@@ -166,7 +172,7 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
 }
 
 bool MqttProtocol::SendText(const std::string& text) {
-    if (publish_topic_.empty()) {
+    if (publish_topic_.empty() || mqtt_ == nullptr) {
         return false;
     }
     if (!mqtt_->Publish(publish_topic_, text)) {
@@ -236,7 +242,23 @@ void MqttProtocol::CloseAudioChannel(bool send_goodbye) {
     }
 }
 
+void MqttProtocol::Suspend() {
+    suspended_ = true;
+    esp_timer_stop(reconnect_timer_);
+    std::unique_ptr<Udp> udp;
+    {
+        std::lock_guard<std::mutex> lock(channel_mutex_);
+        udp = std::move(udp_);
+    }
+    udp.reset();
+    if (mqtt_ != nullptr) {
+        ESP_LOGI(TAG, "Suspending MQTT to free internal RAM");
+        mqtt_.reset();
+    }
+}
+
 bool MqttProtocol::OpenAudioChannel() {
+    suspended_ = false;
     if (mqtt_ == nullptr || !mqtt_->IsConnected()) {
         ESP_LOGI(TAG, "MQTT is not connected, try to connect now");
         if (!StartMqttClient(true)) {
