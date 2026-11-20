@@ -93,6 +93,12 @@ public:
         if (protocol_) protocol_->CloseAudioChannel();
     });
     }
+    // Putuskan koneksi server selama musik diputar (hemat RAM internal).
+    void SuspendCloudForMusic() {
+        Schedule([this]() {
+            if (protocol_) protocol_->Suspend();
+        });
+    }
 
     /**
      * Toggle chat state (event-based, thread-safe)
