@@ -760,15 +760,18 @@ public:
 
         // PAJ7620U2 di bus I2C yang sama (alamat 0x73). Bila tidak terpasang,
         // konstruktor hanya mencatat peringatan.
-        gesture_ = new Paj7620Gesture(
-            display_i2c_bus_,
-            [](PajGesture gesture, void* context) {
-                auto* board = static_cast<PocketWallEC3Board*>(context);
-                Application::GetInstance().Schedule([board, gesture]() {
-                    board->HandleGesture(gesture);
-                });
-            },
-            this);
+        constexpr bool kEnableGesture = true;
+        if (kEnableGesture) {
+            gesture_ = new Paj7620Gesture(
+                display_i2c_bus_,
+                [](PajGesture gesture, void* context) {
+                    auto* board = static_cast<PocketWallEC3Board*>(context);
+                    Application::GetInstance().Schedule([board, gesture]() {
+                        board->HandleGesture(gesture);
+                    });
+                },
+                this);
+        }
 
         ESP_LOGI(TAG, "Pocket Wall-E C3 initialized");
     }
