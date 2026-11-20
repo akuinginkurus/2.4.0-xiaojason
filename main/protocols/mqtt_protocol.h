@@ -33,6 +33,7 @@ public:
     bool OpenAudioChannel() override;
     void CloseAudioChannel(bool send_goodbye = true) override;
     bool IsAudioChannelOpened() const override;
+    void Suspend() override;
 
 private:
     // Alive flag for safe scheduled callbacks - set to false in destructor
@@ -53,6 +54,7 @@ private:
     uint32_t local_sequence_;
     uint32_t remote_sequence_;
     esp_timer_handle_t reconnect_timer_;
+    std::atomic<bool> suspended_{false};
 
     bool StartMqttClient(bool report_error=false);
     void ParseServerHello(const cJSON* root);
