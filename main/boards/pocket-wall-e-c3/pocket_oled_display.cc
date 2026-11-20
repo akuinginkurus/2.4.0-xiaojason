@@ -879,6 +879,12 @@ void PocketOledDisplay::SetMusicMode(bool enabled) {
 
     music_mode_ = enabled;
 
+    // Selama lagu diputar, RAM internal sangat sempit: kurangi frekuensi
+    // redraw LVGL (40 ms -> 100 ms) agar CPU dan alokasi sementara berkurang.
+    if (animation_timer_ != nullptr) {
+        lv_timer_set_period(animation_timer_, enabled ? 100 : kAnimationPeriodMs);
+    }
+
     if (enabled) {
         SetZzzVisible(false);
     }
