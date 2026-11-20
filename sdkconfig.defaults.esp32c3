@@ -11,8 +11,3 @@ CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=n
 CONFIG_ESP_WIFI_ESPNOW_MAX_ENCRYPT_NUM=0
 CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=768
 CONFIG_LWIP_IPV6=n
-
-# Diagnostik (lihat catatan): heap rusak terdeteksi saat free() dan task yang
-# macet menyebabkan reboot dengan nama task, bukan hanya peringatan.
-CONFIG_HEAP_POISONING_LIGHT=y
-CONFIG_ESP_TASK_WDT_PANIC=y
