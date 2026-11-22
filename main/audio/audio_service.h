@@ -2,6 +2,7 @@
 #define AUDIO_SERVICE_H
 
 #include <memory>
+#include <functional>
 #include <atomic>
 #include <deque>
 #include <condition_variable>
@@ -132,7 +133,9 @@ public:
 
     bool PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait = false);
     std::unique_ptr<AudioStreamPacket> PopPacketFromSendQueue();
-    void PlaySound(const std::string_view& sound);
+    // should_stop (opsional) dicek tiap paket; kalau true, sisa suara dibuang.
+    // Dipakai untuk suara panjang yang harus bisa dihentikan di tengah jalan.
+    void PlaySound(const std::string_view& sound, std::function<bool()> should_stop = nullptr);
     bool ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples);
     void ResetDecoder();
     void SetModelsList(srmodel_list_t* models_list);
