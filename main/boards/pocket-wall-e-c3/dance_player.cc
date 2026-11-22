@@ -6,6 +6,8 @@
 #include <esp_timer.h>
 
 #include "application.h"
+#include "board.h"
+#include "display.h"
 #include "assets/lang_config.h"
 #include "audio/audio_service.h"
 #include "motor_controller.h"
@@ -186,6 +188,12 @@ void DancePlayer::TaskLoop() {
         }
     }
 
+    // Layar joget (bintang, equalizer, wajah goyang); dihapus lagi di akhir.
+    auto* display = Board::GetInstance().GetDisplay();
+    if (display != nullptr) {
+        display->SetStatus("DANCE");
+    }
+
     // Memblokir sampai semua paket lagu masuk antrean (laju mengikuti pemutaran).
     audio.PlaySound(Lang::Sounds::OGG_JOGET, [this]() { return stop_requested_.load(); });
 
@@ -205,6 +213,9 @@ void DancePlayer::TaskLoop() {
         timer_ = nullptr;
     }
     StopMotors();
+    if (display != nullptr) {
+        display->SetStatus("DANCE_END");
+    }
     if (stop_requested_.load()) {
         // Buang paket yang sempat lolos sebelum flag stop terbaca.
         audio.ResetDecoder();
