@@ -15,6 +15,8 @@ public:
     // Status khusus untuk tampilan radio (tanpa mengubah kelas Display dasar):
     //   "RADIO|<nama stasiun>|<frekuensi>"  -> tampilkan layar radio
     //   "RADIO_END"                          -> kembali ke wajah Wall-E
+    //   "DANCE"                              -> layar joget (bintang, equalizer, wajah goyang)
+    //   "DANCE_END"                          -> hapus layar joget, kembali standby
     void SetStatus(const char* status) override;
     void SetEmotion(const char* emotion) override;
     void SetChatMessage(const char* role, const char* content) override;
@@ -70,6 +72,19 @@ private:
     char radio_name_buf_[40] = {0};
     char radio_freq_buf_[12] = {0};
 
+    // Layar joget: objek LVGL dibuat saat joget mulai dan dihapus saat selesai, jadi di luar
+    // joget hanya ~200 byte penunjuk/status ini yang terpakai (tanpa objek tetap).
+    static constexpr int kDanceBarCount = 12;
+    static constexpr int kDanceStarCount = 6;
+    lv_obj_t* dance_layer_ = nullptr;
+    lv_obj_t* dance_bars_[kDanceBarCount] = {};
+    lv_obj_t* dance_star_h_[kDanceStarCount] = {};
+    lv_obj_t* dance_star_v_[kDanceStarCount] = {};
+    uint8_t dance_bar_height_[kDanceBarCount] = {};
+    uint8_t dance_star_y_[kDanceStarCount] = {};
+    bool dance_active_ = false;
+    uint32_t dance_start_tick_ = 0;
+
     FaceMode face_mode_ = FaceMode::kNeutral;
     uint32_t animation_tick_ = 0;
     char clock_buf_[8] = {0};  // "HH:MM" untuk layar idle
@@ -104,6 +119,10 @@ private:
     void ShowRadio(const char* payload);
     void HideRadio();
     void UpdateRadioFrame();
+
+    void ShowDance();
+    void HideDance();
+    void UpdateDanceFrame();
 };
 
 #endif  // POCKET_OLED_DISPLAY_H
