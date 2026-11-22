@@ -490,8 +490,36 @@ void PocketOledDisplay::SetEmotion(const char* emotion) {
 
 void PocketOledDisplay::SetChatMessage(
     const char* role,
-    const char* content) {
+    const char* raw_content) {
     DisplayLockGuard lock(this);
+
+    // Buang perintah tool ("% self.xxx(...)") dari teks yang tampil di layar.
+    // Teks sebelum tanda % tetap ditampilkan; kalau seluruhnya perintah, abaikan.
+    const char* content = raw_content;
+    std::string clean;
+    if (raw_content != nullptr) {
+        clean = raw_content;
+        size_t pos = 0;
+        while ((pos = clean.find('%', pos)) != std::string::npos) {
+            size_t q = pos + 1;
+            while (q < clean.size() && (clean[q] == ' ' || clean[q] == '\t')) {
+                q++;
+            }
+            if (clean.compare(q, 5, "self.") == 0) {
+                clean.erase(pos);
+                break;
+            }
+            pos++;
+        }
+        while (!clean.empty() &&
+               std::isspace(static_cast<unsigned char>(clean.back()))) {
+            clean.pop_back();
+        }
+        if (clean.empty() && raw_content[0] != '\0') {
+            return;
+        }
+        content = clean.c_str();
+    }
 
     // Saat idle layar tidak menampilkan teks percakapan.
     if (standby_mode_ && content != nullptr && content[0] != '\0') {
