@@ -10,6 +10,7 @@
 #include "display.h"
 #include "assets/lang_config.h"
 #include "audio/audio_service.h"
+#include "config.h"
 #include "motor_controller.h"
 
 #define TAG "DancePlayer"
@@ -41,6 +42,21 @@ constexpr int kReplyStartWaitMs = 2500;   // tunggu jawaban suara AI mulai
 constexpr int kReplyMaxWaitMs = 12000;    // batas tunggu jawaban AI selesai
 constexpr int kPlaybackMaxWaitMs = 90000; // pengaman kalau antrean audio tidak kosong
 constexpr int kTaskStackBytes = 4096;
+
+// HSV (s = v = 255) -> RGB dengan aritmetika bilangan bulat; hue 0..255.
+void HueToRgb(uint8_t hue, uint8_t* r, uint8_t* g, uint8_t* b) {
+    const int region = hue / 43;                 // 0..5
+    const int rise = (hue - region * 43) * 6;    // 0..252
+    const int fall = 255 - rise;
+    switch (region) {
+        case 0:  *r = 255;  *g = rise; *b = 0;    break;
+        case 1:  *r = fall; *g = 255;  *b = 0;    break;
+        case 2:  *r = 0;    *g = 255;  *b = rise; break;
+        case 3:  *r = 0;    *g = fall; *b = 255;  break;
+        case 4:  *r = rise; *g = 0;    *b = 255;  break;
+        default: *r = 255;  *g = 0;    *b = fall; break;
+    }
+}
 
 }  // namespace
 
@@ -85,12 +101,108 @@ void DancePlayer::TaskEntry(void* arg) {
 }
 
 void DancePlayer::TimerEntry(void* arg) {
-    static_cast<DancePlayer*>(arg)->StepMotors();
+    static_cast<DancePlayer*>(arg)->OnTick();
 }
 
 void DancePlayer::StopMotors() {
     if (motor_ != nullptr) {
         motor_->Stop();
+    }
+}
+
+void DancePlayer::OnTick() {
+    StepMotors();
+    StepLights();
+}
+
+void DancePlayer::StartLights() {
+    std::lock_guard<std::mutex> lock(lights_mutex_);
+    if (lights_ != nullptr) {
+        return;
+    }
+    led_strip_config_t strip_config = {};
+    strip_config.strip_gpio_num = DANCE_LED_GPIO;
+    strip_config.max_leds = DANCE_LED_COUNT;
+    strip_config.color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB;
+    strip_config.led_model = LED_MODEL_WS2812;
+
+    led_strip_rmt_config_t rmt_config = {};
+    rmt_config.resolution_hz = 10 * 1000 * 1000;  // 10 MHz, sama seperti CircularStrip
+
+    if (led_strip_new_rmt_device(&strip_config, &rmt_config, &lights_) != ESP_OK) {
+        lights_ = nullptr;
+        ESP_LOGW(TAG, "Cannot create WS2812B strip on GPIO%d; no lights", DANCE_LED_GPIO);
+        return;
+    }
+    std::memset(light_pixels_, 0, sizeof(light_pixels_));
+    light_pos_ = 0;
+    light_dir_ = 1;
+    light_hue_ = 0;
+    led_strip_clear(lights_);
+}
+
+void DancePlayer::StopLights() {
+    std::lock_guard<std::mutex> lock(lights_mutex_);
+    if (lights_ == nullptr) {
+        return;
+    }
+    led_strip_clear(lights_);
+    led_strip_del(lights_);
+    lights_ = nullptr;
+}
+
+// "Buricak burinong": komet berwarna pelangi memantul kiri-kanan di sepanjang strip
+// dengan ekor memudar, ditambah kilatan warna acak di LED mana saja tiap frame.
+// Memakai array 24 byte di kelas; tanpa alokasi heap per frame.
+void DancePlayer::StepLights() {
+    if (stop_requested_.load()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(lights_mutex_);
+    if (lights_ == nullptr) {
+        return;
+    }
+    auto next_random = [this]() {
+        light_rng_ = light_rng_ * 1664525U + 1013904223U;
+        return light_rng_ >> 16;
+    };
+
+    // Ekor memudar (x 5/8 tiap frame).
+    for (int i = 0; i < DANCE_LED_COUNT; ++i) {
+        for (int c = 0; c < 3; ++c) {
+            light_pixels_[i][c] = static_cast<uint8_t>(light_pixels_[i][c] * 5 / 8);
+        }
+    }
+
+    // Kepala komet pada posisi sekarang, warnanya berganti sepanjang waktu.
+    HueToRgb(light_hue_, &light_pixels_[light_pos_][0], &light_pixels_[light_pos_][1],
+             &light_pixels_[light_pos_][2]);
+
+    // Kilatan acak berwarna lain.
+    if ((next_random() & 1U) != 0) {
+        const int spark = static_cast<int>(next_random() % DANCE_LED_COUNT);
+        HueToRgb(static_cast<uint8_t>(next_random()), &light_pixels_[spark][0],
+                 &light_pixels_[spark][1], &light_pixels_[spark][2]);
+    }
+
+    for (int i = 0; i < DANCE_LED_COUNT; ++i) {
+        led_strip_set_pixel(lights_, i, light_pixels_[i][0] * DANCE_LED_BRIGHTNESS / 255,
+                            light_pixels_[i][1] * DANCE_LED_BRIGHTNESS / 255,
+                            light_pixels_[i][2] * DANCE_LED_BRIGHTNESS / 255);
+    }
+    led_strip_refresh(lights_);
+
+    // Gerak kiri-kanan: pantul di ujung strip dan loncat warna tiap pantulan.
+    light_hue_ = static_cast<uint8_t>(light_hue_ + 9);
+    light_pos_ += light_dir_;
+    if (light_pos_ >= DANCE_LED_COUNT - 1) {
+        light_pos_ = DANCE_LED_COUNT - 1;
+        light_dir_ = -1;
+        light_hue_ = static_cast<uint8_t>(light_hue_ + 60);
+    } else if (light_pos_ <= 0) {
+        light_pos_ = 0;
+        light_dir_ = 1;
+        light_hue_ = static_cast<uint8_t>(light_hue_ + 60);
     }
 }
 
@@ -169,7 +281,9 @@ void DancePlayer::TaskLoop() {
 
     ESP_LOGI(TAG, "Joget dimulai");
 
-    if (motor_ != nullptr) {
+    StartLights();
+
+    if (motor_ != nullptr || lights_ != nullptr) {
         dance_start_us_ = esp_timer_get_time();
         next_change_ms_ = 0;
         step_index_ = 0;
@@ -213,6 +327,7 @@ void DancePlayer::TaskLoop() {
         timer_ = nullptr;
     }
     StopMotors();
+    StopLights();
     if (display != nullptr) {
         display->SetStatus("DANCE_END");
     }
