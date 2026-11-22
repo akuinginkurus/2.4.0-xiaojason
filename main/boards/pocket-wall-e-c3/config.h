@@ -37,4 +37,11 @@
 #define MOTOR_DIRECTION_DEAD_TIME_MS 120
 #define MOTOR_DUAL_START_STAGGER_MS 40
 
+// Modul WS2812B (8 LED) untuk efek joget. Data di GPIO4, VCC 5V, GND disatukan dengan
+// board. DANCE_LED_BRIGHTNESS (0-255) membatasi arus supaya catu daya tidak drop;
+// 64 ~ 25% cukup terang dan menjaga arus total jauh di bawah 150 mA.
+#define DANCE_LED_GPIO GPIO_NUM_4
+#define DANCE_LED_COUNT 8
+#define DANCE_LED_BRIGHTNESS 64
+
 #endif  // POCKET_WALL_E_C3_CONFIG_H
