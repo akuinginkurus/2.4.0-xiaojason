@@ -55,3 +55,13 @@ jobs:
           path: build/merged-binary.bin
           if-no-files-found: error
           retention-days: 14
+
+      - name: Upload ELF (untuk membaca crash/abort)
+        uses: actions/upload-artifact@v4
+        with:
+          name: pocket-wall-e-c3-elf
+          path: |
+            build/xiaozhi.elf
+            build/xiaozhi.map
+          if-no-files-found: error
+          retention-days: 14
