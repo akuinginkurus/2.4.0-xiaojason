@@ -27,6 +27,20 @@ constexpr int kRadioDialLeft = 46;
 constexpr int kRadioDialWidth = 76;
 constexpr int kRadioDialTicks = 10;
 
+// Tata letak layar joget (OLED 128x64): equalizer di baris bawah, bintang di sisi kiri/kanan
+// (di luar jangkauan mata yang bergoyang +-6 px).
+constexpr int kDanceBarWidth = 6;
+constexpr int kDanceBarStep = 10;
+constexpr int kDanceBarLeft = 6;
+constexpr int kDanceBarBottom = 62;
+constexpr int kDanceBarMinHeight = 3;
+constexpr int kDanceBarMaxHeight = 13;
+constexpr int kDanceStarX[] = {4, 4, 4, 124, 124, 124};
+constexpr int kDanceStarZoneTop[] = {1, 16, 31, 1, 16, 31};
+constexpr int kDanceStarPhase[] = {0, 2, 4, 1, 3, 5};
+constexpr int kDanceSparkleSize[] = {0, 1, 2, 3, 2, 1};  // setengah panjang lengan "+"
+constexpr int kDanceSparkleSteps = sizeof(kDanceSparkleSize) / sizeof(kDanceSparkleSize[0]);
+
 void PrepareShape(lv_obj_t* object) {
     lv_obj_remove_style_all(object);
     lv_obj_clear_flag(object, LV_OBJ_FLAG_SCROLLABLE);
@@ -88,6 +102,10 @@ PocketOledDisplay::~PocketOledDisplay() {
     if (radio_layer_ != nullptr) {
         lv_obj_delete(radio_layer_);
         radio_layer_ = nullptr;
+    }
+    if (dance_layer_ != nullptr) {
+        lv_obj_delete(dance_layer_);
+        dance_layer_ = nullptr;
     }
     if (chat_line_ != nullptr) {
         lv_obj_delete(chat_line_);
@@ -349,7 +367,115 @@ void PocketOledDisplay::UpdateRadioFrame() {
     }
 }
 
+void PocketOledDisplay::ShowDance() {
+    if (dance_layer_ != nullptr) {
+        return;
+    }
+    auto* screen = lv_screen_active();
+    dance_layer_ = lv_obj_create(screen);
+    PrepareShape(dance_layer_);  // tanpa gaya: transparan, wajah tetap terlihat di bawahnya
+    lv_obj_set_pos(dance_layer_, 0, 0);
+    lv_obj_set_size(dance_layer_, 128, 64);
+
+    auto make_block = [this](int x, int y, int w, int h) {
+        lv_obj_t* block = lv_obj_create(dance_layer_);
+        PrepareShape(block);
+        lv_obj_set_style_bg_color(block, lv_color_white(), 0);
+        lv_obj_set_style_bg_opa(block, LV_OPA_COVER, 0);
+        lv_obj_set_pos(block, x, y);
+        lv_obj_set_size(block, w, h);
+        return block;
+    };
+
+    for (int i = 0; i < kDanceBarCount; ++i) {
+        dance_bar_height_[i] = kDanceBarMinHeight;
+        dance_bars_[i] = make_block(kDanceBarLeft + i * kDanceBarStep,
+                                    kDanceBarBottom - kDanceBarMinHeight, kDanceBarWidth,
+                                    kDanceBarMinHeight);
+    }
+    for (int i = 0; i < kDanceStarCount; ++i) {
+        dance_star_y_[i] = static_cast<uint8_t>(kDanceStarZoneTop[i] + 3 + NextRandom() % 10);
+        dance_star_h_[i] = make_block(kDanceStarX[i], dance_star_y_[i], 1, 1);
+        dance_star_v_[i] = make_block(kDanceStarX[i], dance_star_y_[i], 1, 1);
+    }
+
+    dance_active_ = true;
+    dance_start_tick_ = animation_tick_;
+    standby_ = false;
+    has_chat_text_ = false;
+    if (chat_line_ != nullptr) {
+        lv_label_set_text_static(chat_line_, "");  // tanpa alokasi heap
+    }
+    lv_obj_move_foreground(dance_layer_);
+    SetFaceMode(FaceMode::kHappy);
+    ESP_LOGI(TAG, "Dance screen shown");
+}
+
+void PocketOledDisplay::HideDance() {
+    dance_active_ = false;
+    if (dance_layer_ != nullptr) {
+        lv_obj_delete(dance_layer_);  // anak-anaknya (bar, bintang) ikut terhapus
+        dance_layer_ = nullptr;
+    }
+    std::memset(dance_bars_, 0, sizeof(dance_bars_));
+    std::memset(dance_star_h_, 0, sizeof(dance_star_h_));
+    std::memset(dance_star_v_, 0, sizeof(dance_star_v_));
+}
+
+// Diperbarui tiap 3 tick (120 ms): equalizer naik-turun acak dan bintang "+" yang
+// membesar-mengecil, lalu pindah ke posisi baru saat menghilang. Hanya mengubah posisi
+// dan ukuran objek yang sudah ada, jadi tidak ada alokasi heap per frame.
+void PocketOledDisplay::UpdateDanceFrame() {
+    if (dance_layer_ == nullptr || (animation_tick_ % 3) != 0) {
+        return;
+    }
+    for (int i = 0; i < kDanceBarCount; ++i) {
+        const int target = kDanceBarMinHeight +
+                           static_cast<int>((NextRandom() >> 16) %
+                                            (kDanceBarMaxHeight - kDanceBarMinHeight + 1));
+        const int h = std::max(kDanceBarMinHeight,
+                               std::min(kDanceBarMaxHeight, (dance_bar_height_[i] + target) / 2));
+        dance_bar_height_[i] = static_cast<uint8_t>(h);
+        lv_obj_set_pos(dance_bars_[i], kDanceBarLeft + i * kDanceBarStep, kDanceBarBottom - h);
+        lv_obj_set_size(dance_bars_[i], kDanceBarWidth, h);
+    }
+
+    const uint32_t step = (animation_tick_ - dance_start_tick_) / 3;
+    for (int i = 0; i < kDanceStarCount; ++i) {
+        const int phase = static_cast<int>((step + kDanceStarPhase[i]) % kDanceSparkleSteps);
+        const int arm = kDanceSparkleSize[phase];
+        if (phase == 0) {
+            dance_star_y_[i] =
+                static_cast<uint8_t>(kDanceStarZoneTop[i] + 3 + (NextRandom() >> 16) % 10);
+        }
+        const int x = kDanceStarX[i];
+        const int y = dance_star_y_[i];
+        lv_obj_set_pos(dance_star_h_[i], x - arm, y);
+        lv_obj_set_size(dance_star_h_[i], 2 * arm + 1, 1);
+        lv_obj_set_pos(dance_star_v_[i], x, y - arm);
+        lv_obj_set_size(dance_star_v_[i], 1, 2 * arm + 1);
+    }
+}
+
 void PocketOledDisplay::SetStatus(const char* status) {
+    if (status != nullptr && std::strcmp(status, "DANCE") == 0) {
+        DisplayLockGuard lock(this);
+        ShowDance();
+        return;
+    }
+    if (status != nullptr && std::strcmp(status, "DANCE_END") == 0) {
+        OledDisplay::SetStatus(Lang::Strings::STANDBY);
+        DisplayLockGuard lock(this);
+        HideDance();
+        if (!standby_) {
+            standby_start_tick_ = animation_tick_;
+        }
+        standby_ = true;
+        SetFaceMode(FaceMode::kSleepy);
+        has_chat_text_ = false;
+        UpdateClock(true);
+        return;
+    }
     if (status != nullptr && std::strncmp(status, "RADIO|", 6) == 0) {
         // Sengaja tidak memanggil OledDisplay::SetStatus: layar radio menutupi status bar,
         // dan kita menghindari alokasi heap selama radio.
@@ -376,7 +502,7 @@ void PocketOledDisplay::SetStatus(const char* status) {
     // pesan chat TTS) diabaikan sepenuhnya: tidak menimpa layar radio, dan tidak
     // membuat alokasi teks LVGL baru yang bisa memecah heap tepat saat codec Opus
     // dilepas (penyebab encoder gagal dipulihkan lalu restart).
-    if (radio_active_) {
+    if (radio_active_ || dance_active_) {
         return;
     }
 
@@ -411,7 +537,7 @@ void PocketOledDisplay::SetStatus(const char* status) {
 }
 
 void PocketOledDisplay::SetEmotion(const char* emotion) {
-    if (radio_active_) {
+    if (radio_active_ || dance_active_) {
         return;
     }
     OledDisplay::SetEmotion(emotion);
@@ -426,7 +552,7 @@ void PocketOledDisplay::SetEmotion(const char* emotion) {
 }
 
 void PocketOledDisplay::SetChatMessage(const char* role, const char* content) {
-    if (radio_active_) {
+    if (radio_active_ || dance_active_) {
         return;
     }
     DisplayLockGuard lock(this);
@@ -442,7 +568,7 @@ void PocketOledDisplay::SetChatMessage(const char* role, const char* content) {
 }
 
 void PocketOledDisplay::ClearChatMessages() {
-    if (radio_active_) {
+    if (radio_active_ || dance_active_) {
         return;
     }
     DisplayLockGuard lock(this);
@@ -516,6 +642,10 @@ void PocketOledDisplay::UpdateAnimationFrame() {
     // Idle: perbarui jam tiap ~1 detik (teks hanya diganti saat menitnya berubah).
     if (standby_ && !radio_active_ && !has_chat_text_ && (animation_tick_ % 25) == 0) {
         UpdateClock(false);
+    }
+
+    if (dance_active_) {
+        UpdateDanceFrame();
     }
 
     // Saat radio diputar, animasi mata dilewati (hemat CPU) dan equalizer yang jalan.
@@ -687,6 +817,14 @@ void PocketOledDisplay::UpdateAnimationFrame() {
     } else if (face_mode_ == FaceMode::kHappy) {
         // Senang: goyang naik-turun pelan.
         animation_y = ((animation_tick_ / 5) % 2 == 0) ? -2 : 0;
+    }
+    if (dance_active_) {
+        // Joget: wajah menggoyang kiri-kanan (gelombang segitiga, 24 tick = ~1 detik per
+        // siklus) sambil melompat kecil mengikuti ketukan.
+        const uint32_t dance_tick = animation_tick_ - dance_start_tick_;
+        const int sway = static_cast<int>(dance_tick % 24);
+        animation_x = (sway < 12 ? sway : 24 - sway) - 6;
+        animation_y = ((dance_tick / 6) % 2 == 0) ? -3 : 0;
     }
     if (gesture_ == Gesture::kBounce) {
         animation_y = ((gt / 3) % 2 == 0) ? -3 : 0;
