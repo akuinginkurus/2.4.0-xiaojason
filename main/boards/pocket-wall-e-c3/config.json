@@ -7,7 +7,7 @@
             "sdkconfig_append": [
                 "CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y",
                 "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"partitions/v2/4m.csv\"",
-                "CONFIG_BOARD_TYPE_POCKET_WALL_E_C3=y", 
+                "CONFIG_BOARD_TYPE_POCKET_WALL_E_C3=y",
                 "CONFIG_LANGUAGE_EN_US=y",
                 "CONFIG_LANGUAGE_VI_VN=n",
                 "CONFIG_WAKE_WORD_DISABLED=y",
@@ -21,7 +21,8 @@
                 "CONFIG_LWIP_TCP_WND_DEFAULT=8640",
                 "CONFIG_LWIP_TCP_RECVMBOX_SIZE=8",
                 "CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=n",
-                "CONFIG_NEWLIB_NANO_FORMAT=y"
+                "CONFIG_NEWLIB_NANO_FORMAT=y",
+                "CONFIG_ESP_SYSTEM_PANIC_REBOOT_DELAY_SECONDS=5"
             ]
         }
     ]
