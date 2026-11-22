@@ -2,6 +2,7 @@
 
 #include <cstring>
 
+#include <esp_heap_caps.h>
 #include <esp_log.h>
 #include <esp_timer.h>
 
@@ -42,6 +43,13 @@ constexpr int kReplyStartWaitMs = 2500;   // tunggu jawaban suara AI mulai
 constexpr int kReplyMaxWaitMs = 12000;    // batas tunggu jawaban AI selesai
 constexpr int kPlaybackMaxWaitMs = 90000; // pengaman kalau antrean audio tidak kosong
 constexpr int kTaskStackBytes = 4096;
+
+// Pengaman RAM (heap internal). Dari log: joget memakai ~40 KB sementara (decoder, resampler,
+// lampu, layar), sedangkan radio sudah menyisakan hanya ~8 KB. Kalau RAM sudah rendah saat
+// joget akan mulai, efek (lampu + layar) dilewati, atau joget dibatalkan sama sekali, daripada
+// membuat heap habis dan perangkat restart (abort).
+constexpr size_t kMinHeapForDance = 45 * 1024;
+constexpr size_t kMinHeapForEffects = 55 * 1024;
 
 // HSV (s = v = 255) -> RGB dengan aritmetika bilangan bulat; hue 0..255.
 void HueToRgb(uint8_t hue, uint8_t* r, uint8_t* g, uint8_t* b) {
@@ -279,9 +287,25 @@ void DancePlayer::TaskLoop() {
         return;
     }
 
+    const size_t free_heap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    const size_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    ESP_LOGI(TAG, "Heap sebelum joget: free %u, largest %u", static_cast<unsigned>(free_heap),
+             static_cast<unsigned>(largest_block));
+    if (free_heap < kMinHeapForDance) {
+        ESP_LOGW(TAG, "RAM terlalu rendah (%u < %u), joget dibatalkan",
+                 static_cast<unsigned>(free_heap), static_cast<unsigned>(kMinHeapForDance));
+        return;
+    }
+    const bool effects = free_heap >= kMinHeapForEffects;
+    if (!effects) {
+        ESP_LOGW(TAG, "RAM rendah, joget tanpa lampu dan efek layar");
+    }
+
     ESP_LOGI(TAG, "Joget dimulai");
 
-    StartLights();
+    if (effects) {
+        StartLights();
+    }
 
     if (motor_ != nullptr || lights_ != nullptr) {
         dance_start_us_ = esp_timer_get_time();
@@ -303,7 +327,7 @@ void DancePlayer::TaskLoop() {
     }
 
     // Layar joget (bintang, equalizer, wajah goyang); dihapus lagi di akhir.
-    auto* display = Board::GetInstance().GetDisplay();
+    auto* display = effects ? Board::GetInstance().GetDisplay() : nullptr;
     if (display != nullptr) {
         display->SetStatus("DANCE");
     }
@@ -335,5 +359,8 @@ void DancePlayer::TaskLoop() {
         // Buang paket yang sempat lolos sebelum flag stop terbaca.
         audio.ResetDecoder();
     }
-    ESP_LOGI(TAG, "Joget selesai%s", stop_requested_.load() ? " (dihentikan)" : "");
+    ESP_LOGI(TAG, "Joget selesai%s; heap sesudah: free %u, largest %u",
+             stop_requested_.load() ? " (dihentikan)" : "",
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)));
 }
