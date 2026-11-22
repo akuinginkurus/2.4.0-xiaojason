@@ -16,8 +16,10 @@
 #include <esp_timer.h>
 #include <cstdint>
 #include <climits>
+#include <stdexcept>
 #include "motor_controller.h"
 #include "radio_player.h"
+#include "dance_player.h"
 #include "mcp_server.h"
 
 #define TAG "PocketWallEC3"
@@ -148,6 +150,7 @@ private:
     Button action_button_;
     MotorController* motor_controller_ = nullptr;
     RadioPlayer radio_player_;
+    DancePlayer dance_player_;
 
     
 // Gerakan singkat "senang": putar kiri lalu kanan, selesai di arah semula.
@@ -199,6 +202,38 @@ private:
 }
 
 
+
+    void InitializeDanceTools() {
+        auto& mcp_server = McpServer::GetInstance();
+
+        mcp_server.AddTool(
+            "self.dance.play",
+            "Make Wall-E dance (joget) while playing its dance song. Use when the user says "
+            "'joget', 'ayo joget', 'goyang' or 'dance'. Wall-E plays the song and moves until "
+            "the song ends; do not use self.wall_e.drive for dancing. After calling this tool, "
+            "answer with at most a few words (for example 'Oke, joget!') and do not call other "
+            "tools or ask follow-up questions.",
+            PropertyList(),
+            [this](const PropertyList&) -> ReturnValue {
+                if (radio_player_.IsPlaying() ||
+                    Application::GetInstance().GetAudioService().IsRadioPlaybackActive()) {
+                    throw std::runtime_error("The radio is playing. Stop the radio first, then dance.");
+                }
+                return dance_player_.Start(motor_controller_);
+            }
+        );
+
+        mcp_server.AddTool(
+            "self.dance.stop",
+            "Stop the dance and its song immediately. Use when the user says 'berhenti joget' "
+            "or 'stop joget'.",
+            PropertyList(),
+            [this](const PropertyList&) -> ReturnValue {
+                dance_player_.RequestStop();
+                return true;
+            }
+        );
+    }
 
     void InitializeDisplayI2c() {
         i2c_master_bus_config_t bus_config = {};
@@ -257,6 +292,10 @@ private:
                 EnterWifiConfigMode();
                 return;
             }
+            if (dance_player_.IsActive()) {
+                dance_player_.RequestStop();
+                return;
+            }
             if (radio_player_.IsPlaying() || app.GetAudioService().IsRadioPlaybackActive()) {
                 radio_player_.RequestStop();
                 return;
@@ -272,6 +311,7 @@ public:
         InitializeDisplay();
         InitializeButton();
         InitializeRadioTools();
+        InitializeDanceTools();
         motor_controller_ = new MotorController(MOTOR_LEFT_IN1_PIN, MOTOR_LEFT_IN2_PIN,
                                                 MOTOR_RIGHT_IN1_PIN, MOTOR_RIGHT_IN2_PIN);
         ESP_LOGI(TAG, "Pocket Wall-E C3 initialized");
