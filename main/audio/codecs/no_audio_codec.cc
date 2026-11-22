@@ -1,6 +1,7 @@
 #include "no_audio_codec.h"
 
 #include <esp_log.h>
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -222,44 +223,69 @@ NoAudioCodecSimplex::NoAudioCodecSimplex(int input_sample_rate, int output_sampl
     ESP_LOGI(TAG, "Simplex channels created");
 }
 
+// Write/Read memproses data per potongan kecil di stack, TANPA alokasi heap. Dulu tiap
+// panggilan membuat std::vector<int32_t>(samples); saat RAM habis atau terfragmentasi (mis. saat
+// radio memutar) alokasi itu melempar std::bad_alloc yang tidak ditangkap, lalu perangkat
+// abort() dan restart sendiri.
+namespace {
+constexpr int kI2sChunkSamples = 64;  // 64 x 4 byte = 256 byte di stack
+}
+
 int NoAudioCodec::Write(const int16_t* data, int samples) {
     std::lock_guard<std::mutex> lock(data_if_mutex_);
-    std::vector<int32_t> buffer(samples);
 
     // output_volume_: 0-100
     // volume_factor_: 0-65536
     int32_t volume_factor = pow(double(output_volume_) / 100.0, 2) * 65536;
-    for (int i = 0; i < samples; i++) {
-        int64_t temp = int64_t(data[i]) * volume_factor; // 使用 int64_t 进行乘法运算
-        if (temp > INT32_MAX) {
-            buffer[i] = INT32_MAX;
-        } else if (temp < INT32_MIN) {
-            buffer[i] = INT32_MIN;
-        } else {
-            buffer[i] = static_cast<int32_t>(temp);
+
+    int32_t buffer[kI2sChunkSamples];
+    int total_written = 0;
+    while (total_written < samples) {
+        const int count = std::min(kI2sChunkSamples, samples - total_written);
+        for (int i = 0; i < count; i++) {
+            int64_t temp = int64_t(data[total_written + i]) * volume_factor; // 使用 int64_t 进行乘法运算
+            if (temp > INT32_MAX) {
+                buffer[i] = INT32_MAX;
+            } else if (temp < INT32_MIN) {
+                buffer[i] = INT32_MIN;
+            } else {
+                buffer[i] = static_cast<int32_t>(temp);
+            }
+        }
+
+        size_t bytes_written = 0;
+        ESP_ERROR_CHECK(i2s_channel_write(tx_handle_, buffer, count * sizeof(int32_t), &bytes_written, portMAX_DELAY));
+        total_written += bytes_written / sizeof(int32_t);
+        if (bytes_written < static_cast<size_t>(count) * sizeof(int32_t)) {
+            break;
         }
     }
-
-    size_t bytes_written;
-    ESP_ERROR_CHECK(i2s_channel_write(tx_handle_, buffer.data(), samples * sizeof(int32_t), &bytes_written, portMAX_DELAY));
-    return bytes_written / sizeof(int32_t);
+    return total_written;
 }
 
 int NoAudioCodec::Read(int16_t* dest, int samples) {
-    size_t bytes_read;
     constexpr uint32_t kReadTimeoutMs = 200;
 
-    std::vector<int32_t> bit32_buffer(samples);
-    if (i2s_channel_read(rx_handle_, bit32_buffer.data(), samples * sizeof(int32_t), &bytes_read, kReadTimeoutMs) != ESP_OK) {
-        return 0;
-    }
+    int32_t bit32_buffer[kI2sChunkSamples];
+    int total_read = 0;
+    while (total_read < samples) {
+        const int count = std::min(kI2sChunkSamples, samples - total_read);
+        size_t bytes_read = 0;
+        if (i2s_channel_read(rx_handle_, bit32_buffer, count * sizeof(int32_t), &bytes_read, kReadTimeoutMs) != ESP_OK) {
+            break;
+        }
 
-    samples = bytes_read / sizeof(int32_t);
-    for (int i = 0; i < samples; i++) {
-        int32_t value = bit32_buffer[i] >> 12;
-        dest[i] = (value > INT16_MAX) ? INT16_MAX : (value < -INT16_MAX) ? -INT16_MAX : (int16_t)value;
+        const int got = bytes_read / sizeof(int32_t);
+        for (int i = 0; i < got; i++) {
+            int32_t value = bit32_buffer[i] >> 12;
+            dest[total_read + i] = (value > INT16_MAX) ? INT16_MAX : (value < -INT16_MAX) ? -INT16_MAX : (int16_t)value;
+        }
+        total_read += got;
+        if (got < count) {
+            break;
+        }
     }
-    return samples;
+    return total_read;
 }
 
 void NoAudioCodec::EnableInput(bool enable) {
