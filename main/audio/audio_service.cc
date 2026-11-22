@@ -1023,7 +1023,7 @@ void AudioService::SetCallbacks(AudioServiceCallbacks& callbacks) {
     callbacks_ = callbacks;
 }
 
-void AudioService::PlaySound(const std::string_view& ogg) {
+void AudioService::PlaySound(const std::string_view& ogg, std::function<bool()> should_stop) {
     if (!codec_->output_enabled()) {
         esp_timer_stop(audio_power_timer_);
         esp_timer_start_periodic(audio_power_timer_, AUDIO_POWER_CHECK_INTERVAL_MS * 1000);
@@ -1034,7 +1034,10 @@ void AudioService::PlaySound(const std::string_view& ogg) {
     size_t size = ogg.size();
 
     auto demuxer = std::make_unique<OggDemuxer>();
-    demuxer->OnDemuxerFinished([this](const uint8_t* data, int sample_rate, size_t size){
+    demuxer->OnDemuxerFinished([this, should_stop](const uint8_t* data, int sample_rate, size_t size){
+        if (should_stop && should_stop()) {
+            return;
+        }
         auto packet = std::make_unique<AudioStreamPacket>();
         packet->sample_rate = sample_rate;
         packet->frame_duration = 60;
