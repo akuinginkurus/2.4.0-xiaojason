@@ -555,6 +555,17 @@ void PocketOledDisplay::SetChatMessage(const char* role, const char* content) {
     if (radio_active_ || dance_active_) {
         return;
     }
+    // Teks yang diawali '%' (mis. "% self.dance.play...") adalah pemanggilan tool dari AI,
+    // bukan ucapan; jangan ditampilkan di layar. Teks sebelumnya dibiarkan apa adanya.
+    if (content != nullptr) {
+        const char* text = content;
+        while (*text == ' ' || *text == '\t' || *text == '\r' || *text == '\n') {
+            ++text;
+        }
+        if (*text == '%') {
+            return;
+        }
+    }
     DisplayLockGuard lock(this);
 
     has_chat_text_ = content != nullptr && content[0] != '\0';
