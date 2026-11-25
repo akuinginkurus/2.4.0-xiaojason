@@ -83,6 +83,12 @@ private:
     uint8_t dance_bar_height_[kDanceBarCount] = {};
     uint8_t dance_star_y_[kDanceStarCount] = {};
     bool dance_active_ = false;
+
+    // Layar pembuka: dibuat saat SetupUI, dihapus saat robot siap (tidak ada RAM tetap).
+    lv_obj_t* splash_ = nullptr;
+    bool splash_hide_pending_ = false;
+    uint32_t splash_min_end_tick_ = 0;
+    uint32_t splash_max_end_tick_ = 0;
     uint32_t dance_start_tick_ = 0;
 
     FaceMode face_mode_ = FaceMode::kNeutral;
@@ -119,6 +125,9 @@ private:
     void ShowRadio(const char* payload);
     void HideRadio();
     void UpdateRadioFrame();
+
+    void ShowBootSplash();
+    void HideBootSplash();
 
     void ShowDance();
     void HideDance();
