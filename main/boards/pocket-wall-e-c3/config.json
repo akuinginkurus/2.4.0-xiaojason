@@ -22,7 +22,8 @@
                 "CONFIG_LWIP_TCP_RECVMBOX_SIZE=8",
                 "CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=n",
                 "CONFIG_NEWLIB_NANO_FORMAT=y",
-                "CONFIG_ESP_SYSTEM_PANIC_REBOOT_DELAY_SECONDS=5"
+                "CONFIG_ESP_SYSTEM_PANIC_REBOOT_DELAY_SECONDS=5",
+                "CONFIG_LV_FONT_MONTSERRAT_28=y"
             ]
         }
     ]
