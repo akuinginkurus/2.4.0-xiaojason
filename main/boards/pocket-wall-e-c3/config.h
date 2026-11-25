@@ -44,4 +44,13 @@
 #define DANCE_LED_COUNT 8
 #define DANCE_LED_BRIGHTNESS 64
 
+// Layar pembuka saat robot pertama dinyalakan (menggantikan tampilan standar xiaozhi).
+// Ubah teks sesuai keinginan; isi BOOT_SPLASH_SUBTITLE dengan "" kalau tidak perlu baris kedua.
+// Layar pembuka tampil minimal BOOT_SPLASH_MIN_MS, lalu hilang saat robot siap (standby).
+// BOOT_SPLASH_MAX_MS = batas paling lama kalau robot tak kunjung siap.
+#define BOOT_SPLASH_TITLE "Pocket WALL-E"
+#define BOOT_SPLASH_SUBTITLE "Radio by Arie"
+#define BOOT_SPLASH_MIN_MS 2500
+#define BOOT_SPLASH_MAX_MS 25000
+
 #endif  // POCKET_WALL_E_C3_CONFIG_H
